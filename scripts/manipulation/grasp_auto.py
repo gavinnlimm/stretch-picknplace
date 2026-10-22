@@ -22,6 +22,7 @@ REACH_OFS = 0.07               # measured: gripper stopped 7 cm short
 REACH_MIN, REACH_MAX = 0.05, 0.50
 SCAN_PANS = (0.0, 0.35, -0.35, 0.7, -0.7)   # head pan offsets (rad) from the calibrated view
 SCAN_XW = 0.60                 # search +-60 cm along the table while scanning
+STEP_ABOVE, STEP_TARGET, STEP_MAX = 0.46, 0.38, 0.25   # side-step if reach > 0.46: aim for 0.38, never more than 25 cm
 MAX_DRIVE = 0.45               # max base drive along the table (m)
 
 class G(N):
@@ -34,15 +35,24 @@ class G(N):
     def mode(s, cli):
         cli.wait_for_service(timeout_sec=5.0); f = cli.call_async(Trigger.Request())
         rclpy.spin_until_future_complete(s, f, timeout_sec=5.0)
-    def go(s, secs=4, **j):
+    def go(s, secs=None, **j):
+        s.spin(0.1)
+        j = {k: v for k, v in j.items() if k not in s.js or abs(s.js[k] - v) > 0.005}   # skip joints already there
+        if not j: return
+        if secs is None:   # time from distance instead of a fixed 4 s
+            spd = {'joint_lift': 0.08, 'wrist_extension': 0.08, 'translate_mobile_base': 0.10}
+            secs = max(abs(v - s.js.get(k, 0.0)) / spd.get(k, 0.6) for k, v in j.items())
+            secs = max(secs, 2.5 if 'joint_gripper_finger_left' in j else 1.5)
+        t0 = time.time()
         g = FollowJointTrajectory.Goal(); g.trajectory.joint_names = list(j)
-        p = JointTrajectoryPoint(); p.positions = [float(v) for v in j.values()]; p.time_from_start.sec = int(secs)
+        p = JointTrajectoryPoint(); p.positions = [float(v) for v in j.values()]
+        p.time_from_start.sec = int(secs); p.time_from_start.nanosec = int((secs % 1) * 1e9)
         g.trajectory.points = [p]; s.traj.wait_for_server()
         f = s.traj.send_goal_async(g); rclpy.spin_until_future_complete(s, f)
         h = f.result()
         if not h.accepted: raise SystemExit('rejected ' + str(list(j)))
         r = h.get_result_async(); rclpy.spin_until_future_complete(s, r)
-        print('  done', ', '.join(f'{k} {v:+.3f}' for k, v in j.items()))
+        print(f'  done {time.time()-t0:4.1f}s (asked {secs:.1f}s)', ', '.join(f'{k} {v:+.3f}' for k, v in j.items()))
     def grasp_tf(s):
         for _ in range(20):
             try: return s.tfb.lookup_transform('base_link', 'link_grasp_center', Time()).transform.translation
@@ -76,26 +86,37 @@ class G(N):
 def main():
     key = sys.argv[1]; cmd = sys.argv[2] if len(sys.argv) > 2 else 'plan'
     cal = json.load(open(CAL))[key]; tag = cal['tag']
-    rclpy.init(); a = G(); a.spin(1.5)
+    rclpy.init(); a = G(); globals()['NODE'] = a; a.spin(1.5)
     while 'wrist_extension' not in a.js: a.spin(0.2)
     a.mode(a.pos)
     if cmd in ('show', 'go'):
-        a.go(joint_lift=LIFT_CARRY); a.go(wrist_extension=RETRACT)      # arm up and in, out of the camera view
-        a.go(joint_wrist_yaw=YAW); a.go(joint_gripper_finger_left=GRIP_OPEN); a.spin(1.0)
+        a.go(joint_lift=LIFT_CARRY, wrist_extension=RETRACT, joint_wrist_yaw=YAW, joint_gripper_finger_left=GRIP_OPEN)   # arm up and in, wrist set, gripper open - one move
     c = a.scan(cal)
     dx, reach = a.plan(c)
     if cmd == 'plan':
         print('plan only - only the head moved'); a.mode(a.nav); rclpy.shutdown(); return
     if abs(dx) > MAX_DRIVE: raise SystemExit(f'can is {dx*100:+.0f} cm along - more than {MAX_DRIVE*100:.0f} cm, not driving')
+    if not (REACH_MIN < reach < REACH_MAX + STEP_MAX): raise SystemExit(f'reach {reach:.2f} m is not plausible (wrong object, or robot far too close/far from the table) - not driving')
     if abs(dx) > 0.05:          # far: drive close, then measure again from the new spot
-        a.go(secs=abs(dx) / 0.05 + 3, translate_mobile_base=dx); a.spin(1.0)
+        a.go(translate_mobile_base=dx); a.spin(1.0)
         g = a.grasp_tf()
         c = a.detect(tag[2], (g.x, tag[1]), 0.30)
         if not c: raise SystemExit('lost the can after driving')
         print('re-measured after driving:'); dx, reach = a.plan(c)
+    if reach > STEP_ABOVE:      # robot stopped too far from the table: step toward it (rotate 90, drive, rotate back)
+        back = reach - STEP_TARGET
+        if back > STEP_MAX: raise SystemExit(f'robot is {back*100:.0f} cm too far from the table - not side-stepping')
+        print(f'robot is {back*100:.0f} cm too far from the table -> side-step')
+        a.go(secs=int(1.5708 / 0.2) + 1, rotate_mobile_base=-1.5708)
+        a.go(translate_mobile_base=back)
+        a.go(secs=int(1.5708 / 0.2) + 1, rotate_mobile_base=1.5708); a.spin(1.0)
+        g = a.grasp_tf()
+        c = a.detect(tag[2], (g.x, tag[1]), 0.30)
+        if not c: raise SystemExit('lost the can after the side-step')
+        print('re-measured after side-step:'); dx, reach = a.plan(c)
     if abs(dx) > 0.15 or not (REACH_MIN < reach < REACH_MAX): raise SystemExit('outside safe limits -> not moving')
-    if abs(dx) > 0.005: a.go(secs=abs(dx) / 0.05 + 3, translate_mobile_base=dx)
-    a.go(joint_lift=LIFT[key]); a.go(secs=6, wrist_extension=reach)
+    if abs(dx) > 0.005: a.go(translate_mobile_base=dx)
+    a.go(joint_lift=LIFT[key]); a.go(wrist_extension=reach)
     if cmd == 'show':
         input('Gripper should be open around the can. Check centering, then press Enter to pull back...')
         a.go(wrist_extension=RETRACT); a.go(joint_lift=LIFT_CARRY)
@@ -106,4 +127,11 @@ def main():
     a.mode(a.nav)
     rclpy.shutdown()
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    try: main()
+    except SystemExit:
+        n = globals().get('NODE')
+        if n is not None:
+            try: n.mode(n.nav)
+            except Exception: pass
+        raise

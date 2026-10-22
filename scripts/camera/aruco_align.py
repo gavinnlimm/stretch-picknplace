@@ -98,8 +98,8 @@ def main():
         dx, dy = m[0] - c['tag'][0], m[1] - c['tag'][1]
         reach = c['ext'] - dy
         print(f'camera: along {dx*100:+.1f} cm, sideways {dy*100:+.1f} cm -> drive {dx*100:+.1f} cm, reach {reach:.3f}')
-        if abs(dx) > 0.25 or not (0.0 < reach < 0.50): raise SystemExit('too far off - not moving')
-        if abs(dx) > 0.005: a.go(secs=abs(dx) / 0.05 + 3, translate_mobile_base=dx)
+        if abs(dx) > 0.40 or not (0.0 < reach < 0.50): raise SystemExit('too far off - not moving')
+        if abs(dx) > 0.005: a.go(secs=abs(dx) / 0.10 + 1, translate_mobile_base=dx)
         json.dump({'reach': reach, 'lift': c['lift']}, open(os.path.expanduser(f'~/align_{key}.json'), 'w'))
         a.mode(a.nav)
     rclpy.shutdown()

@@ -92,7 +92,7 @@ def main():
     n.call(n.pos_mode, Trigger.Request())
     try:
         for j, v in plan:
-            secs = int(abs(v) / (0.1 if 'rotate' in j else 0.05)) + 3
+            secs = int(abs(v) / (0.2 if 'rotate' in j else 0.10)) + 1
             n.move(j, v, secs)
     finally:
         n.call(n.nav_mode, Trigger.Request())
