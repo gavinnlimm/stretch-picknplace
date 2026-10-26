@@ -13,6 +13,7 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 TAGS = {'t1': 8, 't2': 7}
 SIZE = 0.08
 CAL = os.path.expanduser('~/aruco_cal.json')
+PARAMS = cv2.aruco.DetectorParameters(); PARAMS.adaptiveThreshWinSizeMax = 63; PARAMS.adaptiveThreshWinSizeStep = 6; PARAMS.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
 
 def quat_R(q):
     x, y, z, w = q.x, q.y, q.z, q.w
@@ -55,7 +56,7 @@ class A(Node):
             while s.img is None or s.info is None: rclpy.spin_once(s, timeout_sec=0.1)
             m = s.img
             gray = cv2.cvtColor(np.frombuffer(m.data, np.uint8).reshape(m.height, m.width, -1), cv2.COLOR_RGB2GRAY)
-            if hasattr(cv2.aruco, 'ArucoDetector'): c, ids, _ = cv2.aruco.ArucoDetector(dic).detectMarkers(gray)
+            if hasattr(cv2.aruco, 'ArucoDetector'): c, ids, _ = cv2.aruco.ArucoDetector(dic, PARAMS).detectMarkers(gray)
             else: c, ids, _ = cv2.aruco.detectMarkers(gray, dic)
             if ids is None or tid not in ids.ravel(): continue
             k = list(ids.ravel()).index(tid)
@@ -87,7 +88,7 @@ def main():
         a.mode(a.nav)
     elif cmd == 'align':
         c = cal[key]
-        a.mode(a.pos); a.go(wrist_extension=0.02); a.go(joint_lift=0.76 if key == 't2' else 0.86)
+        a.mode(a.pos); a.go(wrist_extension=0.02); a.go(joint_lift=float(os.environ.get('ALIGN_LIFT', 0.76)) if key == 't2' else 0.86)
         m = None
         for dp, dt in [(0,0),(-0.15,0),(0.15,0),(0,-0.15),(-0.3,0),(0.3,0),(-0.15,-0.15),(0.15,-0.15)]:
             a.go(secs=2, joint_head_pan=c['head'][0]+dp); a.go(secs=2, joint_head_tilt=c['head'][1]+dt); a.spin(0.8)

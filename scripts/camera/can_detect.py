@@ -9,8 +9,8 @@ from sensor_msgs.msg import Image, CameraInfo
 
 CAL = os.path.expanduser('~/aruco_cal.json')
 R_CAN = 0.033          # can radius (m)
-H_MIN, H_MAX = 0.02, 0.20   # keep points this far above the table (m)
-TOP_OK, W_MAX = (0.08, 0.15), 0.11   # can-like: top height range, max visible width
+H_MIN, H_MAX = 0.02, 0.30   # keep points this far above the table (m)
+TOP_OK, W_MAX = (0.08, 0.25), 0.11   # can-like: top height range, max visible width
 
 def quat_R(q):
     x, y, z, w = q.x, q.y, q.z, q.w
@@ -52,6 +52,7 @@ def find_can(P, tz, tag_xy, cam_xy, xw=0.30):
         c = C[:, :2].mean(0)
         ev, evec = np.linalg.eigh(np.cov((C[:, :2] - c).T))
         ext = np.ptp((C[:, :2] - c) @ evec[:, 1]); top = np.percentile(hc, 98)
+        if os.environ.get('CAN_DEBUG'): print(f'  component {k}: points {len(C)}, top {top*100:.1f} cm, width {ext*100:.1f} cm')
         if TOP_OK[0] < top < TOP_OK[1] and ext < W_MAX and (best is None or len(C) > best[0]):
             best = (len(C), C, c, ext, top)
     if best is None: return None

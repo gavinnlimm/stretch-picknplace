@@ -23,6 +23,7 @@ REACH_MIN, REACH_MAX = 0.05, 0.50
 SCAN_PANS = (0.0, 0.35, -0.35, 0.7, -0.7)   # head pan offsets (rad) from the calibrated view
 SCAN_XW = 0.60                 # search +-60 cm along the table while scanning
 STEP_ABOVE, STEP_TARGET, STEP_MAX = 0.46, 0.38, 0.25   # side-step if reach > 0.46: aim for 0.38, never more than 25 cm
+OVERLAP = os.environ.get('NO_OVERLAP') != '1'   # lower+extend and lift+retract together (NO_OVERLAP=1 -> one after the other)
 MAX_DRIVE = 0.45               # max base drive along the table (m)
 
 class G(N):
@@ -53,6 +54,35 @@ class G(N):
         if not h.accepted: raise SystemExit('rejected ' + str(list(j)))
         r = h.get_result_async(); rclpy.spin_until_future_complete(s, r)
         print(f'  done {time.time()-t0:4.1f}s (asked {secs:.1f}s)', ', '.join(f'{k} {v:+.3f}' for k, v in j.items()))
+    def path(s, pts):
+        """pts = [(t_seconds, {joint: value}), ...] - one trajectory, all joints listed in every point."""
+        s.spin(0.1); joints = list(pts[0][1]); t0 = time.time()
+        g = FollowJointTrajectory.Goal(); g.trajectory.joint_names = joints
+        for t, d in pts:
+            p = JointTrajectoryPoint(); p.positions = [float(d[k]) for k in joints]
+            p.time_from_start.sec = int(t); p.time_from_start.nanosec = int((t % 1) * 1e9)
+            g.trajectory.points.append(p)
+        s.traj.wait_for_server()
+        f = s.traj.send_goal_async(g); rclpy.spin_until_future_complete(s, f)
+        h = f.result()
+        if not h.accepted: raise SystemExit('rejected path ' + str(joints))
+        r = h.get_result_async(); rclpy.spin_until_future_complete(s, r)
+        print(f'  done {time.time()-t0:4.1f}s (asked {pts[-1][0]:.1f}s) path', ', '.join(f'{k} {v:+.3f}' for k, v in pts[-1][1].items()))
+    def approach(s, lift, reach):
+        """lower the lift and extend at the same time; the gripper is down well before it gets to the object."""
+        if not OVERLAP: s.go(joint_lift=lift); s.go(wrist_extension=reach); return
+        s.spin(0.1); l0 = s.js.get('joint_lift', LIFT_CARRY); e0 = s.js.get('wrist_extension', RETRACT)
+        t1 = max(1.5, abs(l0 - lift) / 0.08)                      # time to lower
+        e1 = e0 + min(0.10, max(0.0, reach - e0 - 0.12))          # while lowering, extend but stay >= 12 cm short of the final reach
+        T = max(t1 + 0.8, abs(reach - e0) / 0.08)
+        s.path([(t1, {'joint_lift': lift, 'wrist_extension': e1}), (T, {'joint_lift': lift, 'wrist_extension': reach})])
+    def retreat(s, lift, retract):
+        """lift and retract at the same time; the retract starts after the object is ~4 cm off the table."""
+        if not OVERLAP: s.go(joint_lift=lift); s.go(wrist_extension=retract); return
+        s.spin(0.1); l0 = s.js.get('joint_lift', 0.7447); e0 = s.js.get('wrist_extension', RETRACT)
+        l1 = min(lift, l0 + 0.04); t1 = 0.5
+        T = max(t1 + abs(e0 - retract) / 0.08, 1.5)
+        s.path([(t1, {'joint_lift': l1, 'wrist_extension': e0}), (T, {'joint_lift': lift, 'wrist_extension': retract})])
     def grasp_tf(s):
         for _ in range(20):
             try: return s.tfb.lookup_transform('base_link', 'link_grasp_center', Time()).transform.translation
@@ -116,13 +146,13 @@ def main():
         print('re-measured after side-step:'); dx, reach = a.plan(c)
     if abs(dx) > 0.15 or not (REACH_MIN < reach < REACH_MAX): raise SystemExit('outside safe limits -> not moving')
     if abs(dx) > 0.005: a.go(translate_mobile_base=dx)
-    a.go(joint_lift=LIFT[key]); a.go(wrist_extension=reach)
+    a.approach(LIFT[key], reach)
     if cmd == 'show':
         input('Gripper should be open around the can. Check centering, then press Enter to pull back...')
         a.go(wrist_extension=RETRACT); a.go(joint_lift=LIFT_CARRY)
     else:
         a.go(joint_gripper_finger_left=GRIP_CLOSE); a.spin(1.0)
-        a.go(joint_lift=LIFT_CARRY); a.go(wrist_extension=RETRACT)
+        a.retreat(LIFT_CARRY, RETRACT)
         print('GRASPED')
     a.mode(a.nav)
     rclpy.shutdown()
