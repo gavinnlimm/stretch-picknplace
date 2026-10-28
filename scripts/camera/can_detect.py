@@ -8,7 +8,8 @@ from rclpy.time import Time
 from sensor_msgs.msg import Image, CameraInfo
 
 CAL = os.path.expanduser('~/aruco_cal.json')
-R_CAN = 0.033          # can radius (m)
+R_CAN = 0.033          # can radius (m) - only used with ADAPT=0
+ADAPT = os.environ.get('ADAPT') != '0'   # size-based grasp (ADAPT=0 -> old can-only values)
 H_MIN, H_MAX = 0.02, 0.30   # keep points this far above the table (m)
 TOP_OK, W_MAX = (0.08, 0.25), 0.11   # can-like: top height range, max visible width
 
@@ -58,8 +59,9 @@ def find_can(P, tz, tag_xy, cam_xy, xw=0.30):
     if best is None: return None
     _, C, c, ext, top = best
     u = c - np.array(cam_xy); u /= (np.linalg.norm(u) + 1e-9)
-    center = c + 0.64 * R_CAN * u          # visible arc centroid sits ~0.64R in front of the axis
-    return {'x': center[0], 'y': center[1], 'top': top, 'n': len(C), 'ext': ext,
+    r = float(np.clip(ext / 2, 0.015, 0.05)) if ADAPT else R_CAN   # object radius from its visible width
+    center = c + 0.64 * r * u              # visible arc centroid sits ~0.64r in front of the axis
+    return {'x': center[0], 'y': center[1], 'top': top, 'n': len(C), 'ext': ext, 'r': r,
             'tz': plane[2] + plane[0] * c[0] + plane[1] * c[1]}
 
 class N(Node):

@@ -15,6 +15,12 @@ REACH_PICK = 0.336
 LIFT_PLACE, REACH_PLACE, LIFT_CLEAR = 0.748, 0.336, 0.86
 RETRACT = 0.02
 
+def grasp_offset():
+    """how much higher than LIFT_GRASP the last grasp was (size-based grasp); 0 if none in the last 15 min or ADAPT=0"""
+    p = os.path.expanduser('~/grasp_last.json')
+    if os.environ.get('ADAPT') == '0' or not os.path.exists(p) or time.time() - os.path.getmtime(p) > 900: return 0.0
+    return max(0.0, json.load(open(p))['lift'] - LIFT_GRASP)
+
 def aligned(key, reach, lift, extra=0.0):
     p = os.path.expanduser(f'~/align_{key}.json')
     if os.path.exists(p) and time.time() - os.path.getmtime(p) < 300:
@@ -58,12 +64,14 @@ def pick(a):
 
 def place(a):
     print('PLACE'); r, l = aligned('t2', REACH_PLACE, LIFT_PLACE, 0.003); a.mode(a.pos)
+    up = grasp_offset(); l += up
+    if up: print(f'  object was grasped {up*100:.1f} cm higher -> placing {up*100:.1f} cm higher (lift {l:.3f})')
     a.go('wrist', joint_wrist_yaw=YAW)
-    a.go('raise', joint_lift=LIFT_CARRY)
+    a.go('raise', joint_lift=max(LIFT_CARRY, l + 0.06))
     a.go('extend', wrist_extension=r)
     a.go('lower to place', joint_lift=l)
     a.go('release', joint_gripper_finger_left=GRIP_OPEN)
-    a.go('lift clear', joint_lift=LIFT_CLEAR)
+    a.go('lift clear', joint_lift=max(LIFT_CLEAR, l + 0.06))
     a.go('retract', wrist_extension=RETRACT)
     a.mode(a.nav)
 

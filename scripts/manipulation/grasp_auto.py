@@ -13,7 +13,7 @@ from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
-from can_detect import N, CAL
+from can_detect import N, CAL, ADAPT
 
 GRIP_OPEN, GRIP_CLOSE, YAW = 0.13, -0.01, -0.0652
 LIFT = {'t1': 0.7447}          # grasp lift per table (table height is fixed)
@@ -25,6 +25,34 @@ SCAN_XW = 0.60                 # search +-60 cm along the table while scanning
 STEP_ABOVE, STEP_TARGET, STEP_MAX = 0.46, 0.38, 0.25   # side-step if reach > 0.46: aim for 0.38, never more than 25 cm
 OVERLAP = os.environ.get('NO_OVERLAP') != '1'   # lower+extend and lift+retract together (NO_OVERLAP=1 -> one after the other)
 MAX_DRIVE = 0.45               # max base drive along the table (m)
+# --- size-based grasp (ADAPT=0 -> old fixed values) ---
+TOP_REF = 0.11                 # soup can height (m): objects this tall or shorter grasp at the old lift
+GRASP_FRAC = 0.5               # raise the grasp by half the extra height (nearer the middle of tall objects)
+MAX_UP = 0.08                  # never raise the grasp more than 8 cm above the old lift
+CARRY_GAP = 0.06               # carry at least 6 cm above the grasp lift
+SQUEEZE = 0.015                # close to 1.5 cm inside the measured width (needs ~/gripper_cal.json)
+GCAL = os.path.expanduser('~/gripper_cal.json')   # from gripper_cal.py: finger gap (m) <-> gripper position
+
+def grip_pos(gap):
+    """gripper position for a finger gap (m), from ~/gripper_cal.json; None if not calibrated"""
+    if not os.path.exists(GCAL): return None
+    d = json.load(open(GCAL)); g, p = np.array(d['gap']), np.array(d['pos']); o = np.argsort(g)
+    return float(np.interp(gap, g[o], p[o]))
+
+def grasp_params(key, c):
+    """grasp lift, carry lift and close position for this object's measured height and width"""
+    if not ADAPT: return LIFT[key], LIFT_CARRY, GRIP_CLOSE
+    lift = LIFT[key] + float(np.clip(GRASP_FRAC * (c['top'] - TOP_REF), 0.0, MAX_UP))
+    carry = max(LIFT_CARRY, lift + CARRY_GAP)
+    pc = grip_pos(c['ext'] - SQUEEZE)
+    close = GRIP_CLOSE if pc is None else float(np.clip(pc, GRIP_CLOSE, GRIP_OPEN))
+    return lift, carry, close
+
+def show_params(key, c):
+    lift, carry, close = grasp_params(key, c)
+    how = 'ADAPT=0: fixed values' if not ADAPT else ('width-based close' if os.path.exists(GCAL) else 'full close: no ~/gripper_cal.json yet')
+    print(f"GRASP: lift {lift:.3f} (fixed {LIFT[key]:.3f}, +{(lift-LIFT[key])*100:.1f} cm), carry {carry:.3f}, close {close:+.3f}  [{how}]")
+    return lift, carry, close
 
 class G(N):
     def __init__(s):
@@ -100,15 +128,15 @@ class G(N):
         for off in SCAN_PANS:
             s.go(secs=2, joint_head_pan=hp + off, joint_head_tilt=ht); s.spin(1.0)
             c = s.detect(tag[2], tag[:2], SCAN_XW, frames=2)
-            if c: print(f"scan: can found at pan {off:+.2f} (x {c['x']:+.3f}, y {c['y']:+.3f})"); break
+            if c: print(f"scan: object found at pan {off:+.2f} (x {c['x']:+.3f}, y {c['y']:+.3f})"); break
         s.go(secs=2, joint_head_pan=hp, joint_head_tilt=ht); s.spin(1.0)
-        if not c: raise SystemExit('scan: no can found within ~60 cm of the tag')
+        if not c: raise SystemExit('scan: no object found within ~60 cm of the tag')
         return c
     def plan(s, c):
         s.spin(0.5); g = s.grasp_tf(); ext0 = s.js['wrist_extension']
         dx = c['x'] - g.x                                   # base drives along x
         reach = ext0 + (g.y - c['y']) + REACH_OFS           # arm extends along -y
-        print(f"can     x {c['x']:+.3f}  y {c['y']:+.3f}  (height {c['top']*100:.1f} cm, width {c['ext']*100:.1f} cm)")
+        print(f"object  x {c['x']:+.3f}  y {c['y']:+.3f}  (height {c['top']*100:.1f} cm, width {c['ext']*100:.1f} cm)")
         print(f"gripper x {g.x:+.3f}  y {g.y:+.3f}  (arm at {ext0:.3f})")
         print(f"PLAN: drive {dx*100:+.1f} cm, reach {reach:.3f}")
         return dx, reach
@@ -122,16 +150,16 @@ def main():
     if cmd in ('show', 'go'):
         a.go(joint_lift=LIFT_CARRY, wrist_extension=RETRACT, joint_wrist_yaw=YAW, joint_gripper_finger_left=GRIP_OPEN)   # arm up and in, wrist set, gripper open - one move
     c = a.scan(cal)
-    dx, reach = a.plan(c)
+    dx, reach = a.plan(c); show_params(key, c)
     if cmd == 'plan':
         print('plan only - only the head moved'); a.mode(a.nav); rclpy.shutdown(); return
-    if abs(dx) > MAX_DRIVE: raise SystemExit(f'can is {dx*100:+.0f} cm along - more than {MAX_DRIVE*100:.0f} cm, not driving')
+    if abs(dx) > MAX_DRIVE: raise SystemExit(f'object is {dx*100:+.0f} cm along - more than {MAX_DRIVE*100:.0f} cm, not driving')
     if not (REACH_MIN < reach < REACH_MAX + STEP_MAX): raise SystemExit(f'reach {reach:.2f} m is not plausible (wrong object, or robot far too close/far from the table) - not driving')
     if abs(dx) > 0.05:          # far: drive close, then measure again from the new spot
         a.go(translate_mobile_base=dx); a.spin(1.0)
         g = a.grasp_tf()
         c = a.detect(tag[2], (g.x, tag[1]), 0.30)
-        if not c: raise SystemExit('lost the can after driving')
+        if not c: raise SystemExit('lost the object after driving')
         print('re-measured after driving:'); dx, reach = a.plan(c)
     if reach > STEP_ABOVE:      # robot stopped too far from the table: step toward it (rotate 90, drive, rotate back)
         back = reach - STEP_TARGET
@@ -142,17 +170,20 @@ def main():
         a.go(secs=int(1.5708 / 0.2) + 1, rotate_mobile_base=1.5708); a.spin(1.0)
         g = a.grasp_tf()
         c = a.detect(tag[2], (g.x, tag[1]), 0.30)
-        if not c: raise SystemExit('lost the can after the side-step')
+        if not c: raise SystemExit('lost the object after the side-step')
         print('re-measured after side-step:'); dx, reach = a.plan(c)
     if abs(dx) > 0.15 or not (REACH_MIN < reach < REACH_MAX): raise SystemExit('outside safe limits -> not moving')
+    lift, carry, close = show_params(key, c)
     if abs(dx) > 0.005: a.go(translate_mobile_base=dx)
-    a.approach(LIFT[key], reach)
+    a.approach(lift, reach)
     if cmd == 'show':
-        input('Gripper should be open around the can. Check centering, then press Enter to pull back...')
+        input('Gripper should be open around the object. Check centering, then press Enter to pull back...')
         a.go(wrist_extension=RETRACT); a.go(joint_lift=LIFT_CARRY)
     else:
-        a.go(joint_gripper_finger_left=GRIP_CLOSE); a.spin(1.0)
-        a.retreat(LIFT_CARRY, RETRACT)
+        a.go(joint_gripper_finger_left=close); a.spin(1.0)
+        a.retreat(carry, RETRACT)
+        json.dump({'lift': lift, 'carry': carry, 'close': close, 'top': c['top'], 'ext': c['ext'], 'time': time.time()},
+                  open(os.path.expanduser('~/grasp_last.json'), 'w'))   # pick_place.py place uses this to place at the same height
         print('GRASPED')
     a.mode(a.nav)
     rclpy.shutdown()
