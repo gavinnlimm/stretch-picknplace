@@ -16,6 +16,7 @@ The robot's IP changes when it restarts or changes networks (check with `hostnam
 | align2 | Find tag 7 with the head camera while the object is held low (`ALIGN_LIFT`, default 0.66) | `aruco_align.py` |
 | place | Reach by the measured distance, lower to the same height offset the object was grasped at (`~/grasp_last.json`), release, lift clear, retract | `pick_place.py place` |
 
+Each run is also recorded as a demo for VLA (π0.5) fine-tuning: `demo_logger.py` saves the head camera image (320×240), all joint states, base odometry and the current stage at 10 Hz to `~/demos/<date>_<object>/` (`frames/`, `steps.jsonl`, `meta.json` with the instruction and result). `RECORD=0` turns it off.
 Each run logs stage times to `~/object_trials.csv` (`date,object,total_s,nav1_s,align1_s,grasp_s,nav2_s,align2_s,place_s,result,failed_at`).
 `full_auto_noalign1.sh` is the same run without the object name (logs to `trials.csv`). `full_auto.sh` is the original, with Table 1 tag alignment.
 
@@ -39,7 +40,7 @@ Each run logs stage times to `~/object_trials.csv` (`date,object,total_s,nav1_s,
    `bash ~/start_bg.sh` does 4–6 in the background if you don't want tabs.
 7. Object on the Table 1 spot, tag 7 clear, then run the command at the top.
 
-Options: `ALIGN_LIFT=<m>` sets the carry height during the tag search; `NO_OVERLAP=1` makes the arm lower/extend and lift/retract one after the other instead of together; `ADAPT=0` uses the old fixed grasp.
+Options: `ALIGN_LIFT=<m>` sets the carry height during the tag search; `NO_OVERLAP=1` makes the arm lower/extend and lift/retract one after the other instead of together; `ADAPT=0` uses the old fixed grasp; `RECORD=0` skips demo recording.
 
 ## Results (Oct 2026)
 | Object | Result |
@@ -66,6 +67,20 @@ Adaptive grasp, Oct 28 (one run each, all successful):
 - Table 2 needs tag 7 to be visible; a tall carried object can block it unless it is held low.
 - The Table 1 target often leaves the robot about 10–17 cm too far from the table, which costs a side-step (~9 s).
 - `aruco_align.py` does not restore navigation mode if it exits early.
+
+## Learning from demonstration (Diffusion Policy / VQ-BeT)
+Pipeline: record demos on the robot -> convert to a LeRobot dataset -> train on the lab GPU PC (RTX 5090) -> run the policy from the GPU PC.
+
+1. **Record** (robot): every `full_auto_obj.sh` run is saved to `~/demos/` automatically. Teleoperated demos:
+   `bash ~/record_demo.sh <object> grasp` while driving in another tab with `ros2 run stretch_core keyboard_teleop`
+   (optional wrist camera: `WRIST_TOPIC=<image topic> bash ~/record_demo.sh ...`). Keep the head still during demos.
+2. **Copy** `~/demos` from the robot to the GPU PC (e.g. `rsync -a hello-robot@<robot ip>:~/demos/ ~/gavin/demos/`).
+3. **Convert** (GPU PC): `python scripts/learning/convert_to_lerobot.py --demos ~/gavin/demos --out ~/gavin/datasets/stretch_grasp --stages grasp,teleop_grasp`
+   - state `[base_x, lift, arm, wrist_yaw, gripper, head_pan, head_tilt]`, action = next `[base_x, lift, arm, wrist_yaw, gripper]` (absolute), head image 240x320 (+ wrist with `--wrist`), 10 Hz.
+   - only successful demos by default; `--source teleop|scripted` to filter.
+4. **Train** (GPU PC, LeRobot 0.6.1): `lerobot-train --policy.type=diffusion` (263M params) or `--policy.type=vqbet` (38M) on that dataset.
+
+Tested end to end on synthetic demos (conversion, loading, and a short Diffusion Policy and VQ-BeT training run).
 
 ## Back up from the robot
 `bash backup.sh` (robot on; uses the `stretch` ssh alias). Or set the address with `ROBOT=hello-robot@<ip> bash backup.sh`.

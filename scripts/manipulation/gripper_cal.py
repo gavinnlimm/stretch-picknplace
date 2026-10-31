@@ -11,7 +11,7 @@ from std_srvs.srv import Trigger
 from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
 
-POS = [0.13, 0.10, 0.07, 0.04, 0.02, 0.0]     # gripper positions to measure (open -> closed)
+POS = [0.13, 0.10, 0.07, 0.04, 0.02, 0.0, -0.01, -0.02]   # gripper positions to measure (open -> closed); grasp never closes past -0.01
 J = 'joint_gripper_finger_left'
 OUT = os.path.expanduser('~/gripper_cal.json')
 
