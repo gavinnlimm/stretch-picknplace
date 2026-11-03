@@ -13,7 +13,7 @@ POST /act   {"image": <base64 JPEG, 320x240, same as demo_logger.py saves>, "sta
 GET  /health -> {"ok": true, ...}
 The state is [base_x, lift, arm, wrist_yaw, gripper, head_pan, head_tilt], the same order the converter used.
 One server serves one module (pick or drop); start one per checkpoint, on different ports.
-STATUS: written but not yet run against a real checkpoint - use --selftest first.
+STATUS: --selftest passed on the drop checkpoint (Nov 3); not yet used with the robot.
 """
 import argparse, base64, io, json, os, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -40,7 +40,7 @@ def load_real(ckpt, device):
     print(f'loaded {ckpt}: chunk_size {policy.config.chunk_size}, n_action_steps {n}, device {device}')
 
     def act(rgb, state):
-        obs = {'observation.images.head': rgb, 'observation.state': np.asarray(state, np.float32)}
+        obs = {'observation.images.head': np.array(rgb, np.uint8), 'observation.state': np.array(state, np.float32)}   # copies: torch wants writable arrays
         with torch.inference_mode():
             batch = prepare_observation_for_inference(obs, torch.device(device), None, 'stretch_re1')
             batch = pre(batch)

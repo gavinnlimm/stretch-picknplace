@@ -79,7 +79,11 @@ Earlier carton runs: 3/3, avg 115 s. Per-run times are in `results/object_trials
 
 - 36 teleoperated demos recorded with the Xbox 360 gamepad. Usable: **13 drop** and **15 pick** demos.
 - LeRobot 0.6.1 datasets built on the lab GPU PC: drop 13 episodes (1348 frames), pick 15 episodes (2033 frames).
-- ACT on the drop set: a 200-step test run, then 5000 steps (chunk size 20, about 6.5 min). Loss fell from about 6.2 to about 0.5. This is **training loss only**, on 13 demos, with no held-out check.
+- ACT, 5000 steps each, chunk size 20, about 6.5 min per module on the RTX 5090:
+  - drop (13 demos): loss about 6.2 to 0.5 (L1 0.55 to 0.15)
+  - pick (15 demos): loss about 10.0 to 0.32 (L1 0.60 to 0.11)
+
+  This is **training loss only**, with no held-out check: it shows the models fit the demos, not that they work on the robot.
 - **Not done:** no policy has been run on the robot, and there is no learned success rate. The robot client is written and checked offline but has not moved the robot.
 
 **Recording rules**
