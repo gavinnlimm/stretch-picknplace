@@ -1,47 +1,44 @@
-# Stretch RE1: autonomous pick and place (HRC² Lab)
+# Stretch RE1: pick and place, and learning from demonstrations (HRC² Lab)
 
-One command takes an object from Table 1 and places it at tag 7 on Table 2:
+This repo has two parts:
+
+1. **A scripted pipeline** that moves an object from Table 1 to Table 2 on the lab's Stretch RE1, using Nav2 to drive and the head camera to grasp and place. It works on 5 different objects and is the baseline.
+2. **A learning pipeline** (record teleoperated demos, convert them to LeRobot format, train ACT on the lab GPU) that aims to replace the scripted grasp and drop. Demos and first training runs exist. **Nothing learned has been run on the robot yet.**
+
+## Run the scripted pipeline
 
 ```bash
-bash ~/full_auto_obj.sh <object_name>      # e.g. soup_can, carton, soda_bottle, paper_cup, coke_can
+bash ~/full_auto_obj.sh <object_name>      # soup_can, carton, soda_bottle, paper_cup, coke_can
 ```
 
-The scripts live in `~/` on the robot (`hello-robot@stretch-re1-1050`); this repo groups them in folders. The robot's IP changes when it restarts or changes networks (check with `hostname -I` on the robot). Keep it in one place with a `Host stretch` entry in `~/.ssh/config`, then `ssh stretch`.
+The scripts live in `~/` on the robot (`hello-robot@stretch-re1-1050`); this repo groups them in folders. The robot's IP changes when it restarts or changes networks (`hostname -I` on the robot). Put it in one place with a `Host stretch` entry in `~/.ssh/config`, then `ssh stretch`.
 
-## Pipeline (what one run does)
+### What one run does
 
-| Stage | What happens | Files |
-|---|---|---|
-| nav1 | Nav2 to the Table 1 staging spot, then auto_fix (AMCL refresh, turn-drive-turn onto the table pose) | `t1.sh`, `go_t1_stage.sh`, `auto_fix.py` |
-| grasp | Depth only (no Table 1 tag): scan with the head, find the object and measure its height and width, drive, re-measure, side-step if more than 46 cm from the table, lower + extend to a size-based height, close to the measured width, lift + retract | `grasp_auto.py`, `can_detect.py`, `aruco_cal.json`, `gripper_cal.json` |
-| nav2 | Nav2 to the Table 2 staging spot, then auto_fix | `t2.sh`, `go_t2_stage.sh`, `auto_fix.py` |
-| align2 | Find tag 7 with the head camera while the object is held low (`ALIGN_LIFT`, default 0.66) | `aruco_align.py` |
-| place | Reach by the measured distance, lower to the same height offset the object was grasped at (`~/grasp_last.json`), release, lift clear, retract | `pick_place.py place` |
+1. **nav1:** Nav2 to the Table 1 staging spot, then `auto_fix.py` (AMCL refresh, turn-drive-turn onto the table pose). Files: `t1.sh`, `go_t1_stage.sh`.
+2. **grasp:** depth only. Scan with the head, find the object and measure its height and width, drive along the table, side-step if more than 46 cm away, lower and extend to a size-based height, close to the measured width, lift and retract (`grasp_auto.py`, `can_detect.py`).
+3. **nav2:** Nav2 to the Table 2 staging spot, then `auto_fix.py`. Files: `t2.sh`, `go_t2_stage.sh`.
+4. **align2:** find tag 7 with the head camera while the object is held low (`aruco_align.py`).
+5. **place:** reach by the measured distance, lower by the same offset used at the grasp (`~/grasp_last.json`), release, lift clear, retract (`pick_place.py place`).
 
-Each run is also recorded as a demo for imitation learning (ACT or Diffusion Policy): `demo_logger.py` saves the head camera image (320×240), all joint states, base odometry and the current stage at 10 Hz to `~/demos/<date>_<object>/` (`frames/`, `steps.jsonl`, `meta.json` with the instruction and result). `RECORD=0` turns it off. Each run logs stage times to `~/object_trials.csv` (`date,object,total_s,nav1_s,align1_s,grasp_s,nav2_s,align2_s,place_s,result,failed_at`). `full_auto_noalign1.sh` is the same run without the object name (logs to `trials.csv`). `full_auto.sh` is the original, with Table 1 tag alignment.
+Each run logs stage times to `~/object_trials.csv` and is saved as a demo in `~/demos/` (head image, joint states, odometry and stage at 10 Hz). Options: `RECORD=0` skips the demo, `ADAPT=0` uses the old fixed grasp, `ALIGN_LIFT=<m>` sets the carry height during the tag search, `NO_OVERLAP=1` runs arm moves one after the other.
 
-## Key values
+### Key values
 
 - Map `lab_map_v3`, home = (0, 0). Table 1 pose (-1.146, 0.345, -4.2°), Table 2 pose (-0.660, 1.682, -178.9°).
-- Tag 7 (`DICT_6X6_250`, 8 cm) = Table 2 place target. Tag 8 is only stored in `aruco_cal.json` (search region and table height); it is no longer detected.
-- Adaptive grasp (`ADAPT=0` restores the old fixed values):
-  - Grasp lift = 0.7447 + half the object's height above 11 cm (max +8 cm). Carry lift 0.86 (at least 6 cm above the grasp). Retract 0.02.
-  - Gripper opens to 0.13 and closes to the measured width minus 1.5 cm, using `gripper_cal.json` (position to fingertip gap). Without the file it closes to -0.01.
-  - Object center uses the measured width instead of a fixed can radius.
-- Gripper calibration (fingertip gap): 0.13 = 12 cm, 0.10 = 11, 0.07 = 9.5, 0.04 = 7.5, 0.02 = 6.5, 0.00 = 5 cm. Redo with `python3 ~/gripper_cal.py` (run-stop released).
-- Detection window (`can_detect.py`): points 2–30 cm above the table, object top 8–25 cm, width under 11 cm.
+- Tag 7 (`DICT_6X6_250`, 8 cm) is the Table 2 place target. Tag 8 is only stored in `aruco_cal.json` (search region and table height).
+- Adaptive grasp: grasp lift = 0.7447 + half the object's height above 11 cm (max +8 cm); carry lift 0.86; the gripper closes to the measured width minus 1.5 cm using `gripper_cal.json`. Redo that calibration with `python3 ~/gripper_cal.py` (run-stop released).
+- Detection (`can_detect.py`): points 2–30 cm above the table, object top 8–25 cm, width under 11 cm.
 
 ## Starting up
 
 1. Robot on the home tape, area clear, run-stop solid, charger unplugged.
-2. Log in (each tab, from your Mac): `ssh stretch`, then `source ~/ros_env.sh`. Without it, conda's Python runs and `rclpy` fails to import. Never type `ssh stretch` inside a robot tab; the alias exists only on the Mac.
-3. Home: `stretch_free_robot_process.py; stretch_system_check.py; stretch_robot_home.py`. If `stretch_free_robot_process.py` prints a `FileNotFoundError ... stretch_body_robot_pid.txt.lock`, nothing was holding the robot and it is harmless.
+2. In every robot tab: `ssh stretch` from your Mac, then `source ~/ros_env.sh`. Without it conda's Python runs and `rclpy` fails to import. Never type `ssh stretch` inside a robot tab.
+3. Home: `stretch_free_robot_process.py; stretch_system_check.py; stretch_robot_home.py`. A `FileNotFoundError ... stretch_body_robot_pid.txt.lock` here is harmless.
 4. Nav tab: `ros2 launch stretch_nav2 navigation.launch.py use_rviz:=false map:=${HELLO_FLEET_PATH}/maps/lab_map_v3.yaml`
-5. Camera tab: `ros2 launch stretch_core d435i_high_resolution.launch.py`. Check it publishes with `ros2 topic hz /camera/color/image_raw` (about 15 Hz). A `Motion Module failure` warning after a relaunch does not affect the color stream; unplug and replug the camera USB if color frames stop.
-6. Set the start position: publish `/initialpose` (x 0, y 0, w 1), then call `/request_nomotion_update` about 10 times. `bash ~/start_bg.sh` does 4–6 in the background if you don't want tabs.
-7. Object on the Table 1 spot, tag 7 clear, then run the command at the top.
-
-Options: `ALIGN_LIFT=<m>` sets the carry height during the tag search; `NO_OVERLAP=1` makes the arm lower/extend and lift/retract one after the other instead of together; `ADAPT=0` uses the old fixed grasp; `RECORD=0` skips demo recording.
+5. Camera tab: `ros2 launch stretch_core d435i_high_resolution.launch.py`. Check `ros2 topic hz /camera/color/image_raw` (about 15 Hz). If frames stop, unplug and replug the camera USB.
+6. Set the start pose: publish `/initialpose` (x 0, y 0, w 1), then call `/request_nomotion_update` about 10 times. `bash ~/start_bg.sh` does steps 4–6 in the background.
+7. Put the object on the Table 1 spot, keep tag 7 clear, run the command at the top.
 
 **Copying scripts to the robot.** The robot only runs what is in its home directory. After changing a script, copy it from your Mac (not from a robot tab):
 
@@ -50,57 +47,69 @@ cd ~/stretch-picknplace
 scp scripts/learning/demo_logger.py scripts/learning/record_demo.sh scripts/full_auto_obj.sh stretch:~/
 ```
 
-Check with `ls ~/record_demo.sh ~/demo_logger.py` on the robot. Press Ctrl+C **once** to stop the driver and wait; repeated presses print a long `ThreadServiceExit` traceback. If your terminal reports `unknown terminal type` (Ghostty), run `export TERM=xterm-256color` before `keyboard_teleop`.
+Press Ctrl+C **once** to stop the driver and wait for it to exit.
 
 ## Results (Oct 2026)
 
-| Object | Result |
-|---|---|
-| Soup can | 6/6, avg ~91 s |
-| Carton | 3/3, avg 115 s (including one run rotated 90°) |
-| 7UP bottle | detection window and tag-search height had to be changed; 2/2 afterwards (110 s, 112 s) |
-| Paper cup | 1/1 (99 s) |
+Soup can 6/6, avg ~91 s. Adaptive grasp, one run each, all successful:
 
-Adaptive grasp, Oct 28 (one run each, all successful):
+| Object | Height, width | Grasp height | Total |
+|---|---|---|---|
+| 7UP bottle | 21.4 cm, 6.7 cm | +5.3 cm | 88 s |
+| Soup can | 10.9 cm, 8.0 cm | +0.0 cm | 101 s |
+| Coke can | 12.3 cm, 6.2 cm | +0.7 cm | 103 s |
+| Paper cup | 11.3 cm, 8.8 cm | +0.1 cm | 105 s |
+| Carton | 14.2 cm, 5.9 cm | +1.6 cm | 109 s (incl. side-step) |
 
-| Object | Measured height, width | Grasp height | Close (gap) | Total |
-|---|---|---|---|---|
-| 7UP bottle | 21.4 cm, 6.7 cm | +5.3 cm | 0.002 (~5 cm) | 88 s |
-| Soup can | 10.9 cm, 8.0 cm | +0.0 cm | 0.020 (~6.5 cm) | 101 s |
-| Coke can | 12.3 cm, 6.2 cm | +0.7 cm | 0.000 (~5 cm) | 103 s |
-| Paper cup | 11.3 cm, 8.8 cm | +0.1 cm | 0.036 (~7.2 cm) | 105 s |
-| Carton | 14.2 cm, 5.9 cm | +1.6 cm | 0.000 (~5 cm) | 109 s (incl. side-step) |
+Earlier carton runs: 3/3, avg 115 s. Per-run times are in `results/object_trials.csv`.
 
 ## Known limits
 
-- Detection still only accepts objects 8–25 cm tall and under 11 cm wide, in a search strip around the stored tag position. The 7 cm reach offset is fixed.
-- Narrow objects (target gap under 5 cm) close only to 0.00, the narrowest calibrated point, so they get less squeeze than the old -0.01.
-- Objects usually sit 16–21 cm along the table from where the robot stops, so it drives along the table before every grasp.
-- Table 2 needs tag 7 to be visible; a tall carried object can block it unless it is held low.
-- The Table 1 target often leaves the robot about 10–17 cm too far from the table, which costs a side-step (~9 s).
+- Detection only accepts objects 8–25 cm tall and under 11 cm wide, in a strip around the stored tag position. The 7 cm reach offset is fixed.
+- Objects narrower than a 5 cm gap close only to the narrowest calibrated point.
+- Nav2 often stops 10–17 cm too far from Table 1, which costs a side-step (about 9 s).
+- Table 2 needs tag 7 visible; a tall carried object can block it unless held low.
 - `aruco_align.py` does not restore navigation mode if it exits early.
 
-## Learning from demonstration (ACT)
+## Learning from demonstrations (ACT)
 
-**Status:** the recorder and converter exist and have been tested end to end on **synthetic** demos only. No real teleop demos have been recorded yet, no policy has been trained on real data, and the robot client that runs a trained policy is not written. Nothing in this repo reports a learned-policy success rate yet.
+**Goal:** replace the scripted grasp and place with learned policies for a new **pick and drop** task: pick an object at Table 1, then drop it into a yellow container at Table 2. It is split into two modules trained separately: *pick* and *drop*. The head camera is the only camera (the RE1 has no wrist camera). Test plan: [docs/experiments.md](docs/experiments.md).
 
-**Plan:** record teleoperated demos, convert them to a LeRobot dataset, train **ACT** (Action Chunking with Transformers) on the lab GPU PC, and compare it to the scripted pipeline on held-out trials. The next task is **pick and drop**: pick up an object and drop it into a yellow container on the table, replacing the tag 7 ending. It is split into two modules, trained separately: (1) pick up the object at Table 1, (2) drop a held object into the yellow container at Table 2. Head camera only (the RE1 has no wrist camera), with the head pose fixed for every demo and trial. See [docs/experiments.md](docs/experiments.md) for the test plan.
+**Status (Nov 3, 2026)**
 
-Pipeline: record demos on the robot -> convert to a LeRobot dataset -> train on the lab GPU PC (RTX 5090) -> run the policy from the GPU PC.
+- 36 teleoperated demos recorded with the Xbox 360 gamepad. Usable: **13 drop** and **15 pick** demos.
+- LeRobot 0.6.1 datasets built on the lab GPU PC: drop 13 episodes (1348 frames), pick 15 episodes (2033 frames).
+- ACT on the drop set: a 200-step test run, then 5000 steps (chunk size 20, about 6.5 min). Loss fell from about 6.2 to about 0.5. This is **training loss only**, on 13 demos, with no held-out check.
+- **Not done:** no policy has been run on the robot, and there is no learned success rate. The robot client is written and checked offline but has not moved the robot.
 
-- **Record (robot):** every `full_auto_obj.sh` run is saved to `~/demos/` automatically. Teleoperated demos: drive with the gamepad (driver tab: `ros2 launch stretch_core stretch_driver.launch.py mode:=gamepad`, see [docs/gamepad_setup.md](docs/gamepad_setup.md)) and run `bash ~/record_demo.sh <object> grasp` in another tab. Fallback: relaunch the driver without `mode:=gamepad` and use `ros2 run stretch_core keyboard_teleop`. Optional wrist camera: `WRIST_TOPIC=<image topic> bash ~/record_demo.sh ...`. Keep the head still during demos. Task `grasp` (default) records the pick at Table 1 with stage `teleop_grasp`; `bash ~/record_demo.sh <object> drop` records the drop into the yellow container at Table 2 with stage `teleop_drop`. `meta.json` stores the stage, the result (`OK`/`FAIL`) and whether the demo included a correction.
-- **Copy** `~/demos` from the robot to the GPU PC (e.g. `rsync -a hello-robot@<robot ip>:~/demos/ ~/gavin/demos/`).
-- **Convert (GPU PC),** one dataset per module:
-  - pick: `python scripts/learning/convert_to_lerobot.py --demos ~/gavin/demos --out ~/gavin/datasets/stretch_pick --stages grasp,teleop_grasp`
-  - drop: `python scripts/learning/convert_to_lerobot.py --demos ~/gavin/demos --out ~/gavin/datasets/stretch_drop --stages teleop_drop --source teleop`
-  - state `[base_x, lift, arm, wrist_yaw, gripper, head_pan, head_tilt]`, action = next `[base_x, lift, arm, wrist_yaw, gripper]` (absolute), head image 240x320 (+ wrist with `--wrist`), 10 Hz.
-  - `base_x` is the forward distance driven since the first kept frame of the demo (odometry, projected on the starting heading), so it is 0 at the start of every demo. Demos need different starting base positions for the policy to learn to correct for them (the alignment test).
-  - only successful demos by default; `--source teleop|scripted` to filter. The task text is each demo's own instruction from `meta.json` unless `--task` is given.
-  - at the end it prints how many demos were kept and skipped, with the reason for each, and how many frames were left out because their stage is not in `--stages`. It warns if the head pan/tilt moved during a demo.
-  - tested on synthetic demos with a stub of LeRobot only; not yet run on real demos or the real LeRobot install.
-- **Train (GPU PC, LeRobot 0.6.1, environment `~/gavin/lerobot-env`):** `lerobot-train --policy.type=act` on that dataset. `--policy.type=diffusion` and `--policy.type=vqbet` also work on the same dataset and are kept as comparisons. See the [LeRobot ACT docs](https://huggingface.co/docs/lerobot/act).
-- **Deploy:** not written yet. LeRobot's `lerobot-rollout` targets SO-101 style arms, so a Stretch client has to be written.
+**Recording rules**
+
+- Keep the head fixed within each set: pick pan -1.29, tilt -0.75; drop pan -1.38, tilt -0.60. Images are saved as recorded (rotated 90°); the future robot client must use the same orientation.
+- No base turning in demos. The data only records forward distance (`base_x`), and the arm reaches sideways, so forward is along the table. Start inside arm reach of the table.
+- Vary the start position along the table between demos. `base_x` is measured from each demo's start, so identical starts would teach the policy nothing about correcting a miss.
+- Mark a correction only for a real recovery from a mistake.
+
+**Workflow**
+
+1. **Record (robot):** drive with the gamepad ([docs/gamepad_setup.md](docs/gamepad_setup.md)) and run `bash ~/record_demo.sh soup_can grasp` for the pick, or `... soup_can drop` for the drop. Press Enter to stop, then answer success and correction. An optional wrist camera can be added with `WRIST_TOPIC=<image topic> bash ~/record_demo.sh ...` and `--wrist` in the converter; keyboard teleop is the fallback if the gamepad fails. Each demo is saved to `~/demos/<date>_teleop_<task>_<object>/` with `meta.json` (stage, result, correction).
+2. **Copy** `~/demos` to the GPU PC, for example robot to Mac to GPU with `rsync -a`.
+3. **Convert (GPU PC, `~/gavin/lerobot-env`):** one dataset per module.
+
+   ```bash
+   python scripts/learning/convert_to_lerobot.py --demos ~/gavin/demos --out ~/gavin/datasets/stretch_pick --stages grasp,teleop_grasp
+   python scripts/learning/convert_to_lerobot.py --demos ~/gavin/demos --out ~/gavin/datasets/stretch_drop --stages teleop_drop --source teleop
+   ```
+
+   State is `[base_x, lift, arm, wrist_yaw, gripper, head_pan, head_tilt]`; the action is the next step's `[base_x, lift, arm, wrist_yaw, gripper]` (absolute), at 10 Hz. `base_x` is the forward distance since the first kept frame, projected on the starting heading. The converter keeps only successful demos, prints how many were kept and skipped and why, and warns if the head moved. To exclude a demo, set its `result` in `meta.json` to something other than `OK`.
+4. **Train:**
+
+   ```bash
+   nohup lerobot-train --policy.type=act --dataset.repo_id=local/stretch_drop --dataset.root=$HOME/gavin/datasets/stretch_drop --policy.push_to_hub=false --policy.device=cuda --policy.chunk_size=20 --policy.n_action_steps=20 --num_workers=8 --batch_size=8 --steps=5000 --output_dir=$HOME/gavin/outputs/act_drop_chunk20 > act_drop.log 2>&1 &
+   ```
+
+   `--num_workers=8` matters: with the default, data loading took 0.65 s per step against 0.07 s on the GPU. Diffusion Policy and VQ-BeT also run on the same datasets as comparisons. See the [LeRobot ACT docs](https://huggingface.co/docs/lerobot/act).
+5. **Deploy (written, not yet run on the robot):** `scripts/learning/policy_server.py` serves a checkpoint from the GPU PC; `scripts/learning/policy_client.py` runs on the robot, sends the head image and state, and moves toward the returned targets. It is a dry run unless `--go` is given, asks for Enter before every move, and clips targets to the demo joint ranges. Bring-up steps: [docs/experiments.md](docs/experiments.md#robot-client-bring-up-not-yet-run).
 
 ## Back up from the robot
 
-`bash backup.sh` (robot on; uses the `stretch` ssh alias). Or set the address with `ROBOT=hello-robot@<ip> bash backup.sh`.
+`bash backup.sh` (robot on; uses the `stretch` ssh alias), or `ROBOT=hello-robot@<ip> bash backup.sh`.

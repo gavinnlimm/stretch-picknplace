@@ -51,3 +51,14 @@ Failure causes to use: object hidden from the camera, misaligned, gripper missed
 - Can ACT absorb the alignment, or is a scripted alignment step needed? Hypothesis: it can learn small corrections if the demos include varied starts and the corrections. To be tested.
 - Does a held object block the head camera's view of the container at Table 2? Check the head pose.
 - Is the head camera enough, or do the failures point to needing a wrist camera?
+
+## Robot client bring-up (not yet run)
+
+`scripts/learning/policy_server.py` (GPU PC) loads a trained ACT checkpoint and answers requests; `scripts/learning/policy_client.py` (robot) sends the head image and state, and moves toward the returned targets. Offline checks so far: the client builds exactly the same state vector as the converter on a real demo, its images match the training images (mean difference 0.14/255), the request/response path works against a fake server, and the safety clipping rejects bad chunks. Nothing has moved the robot yet. Bring it up in this order, one module at a time (drop first):
+
+1. **Model check (GPU PC, no robot):** `python policy_server.py --checkpoint ~/gavin/outputs/act_drop_chunk20/checkpoints/last/pretrained_model --selftest ~/gavin/demos/<a drop demo>`. Errors should be small on demos it trained on; if not, the loading or preprocessing is wrong.
+2. **Network:** start the server (same command without `--selftest`), then on the robot `curl http://<gpu ip>:8000/health`. If the robot cannot reach the GPU PC, sort out a route before going further.
+3. **Copy the client:** from the Mac, `scp scripts/learning/policy_client.py stretch:~/`.
+4. **Dry run:** driver in gamepad mode, head at the module's demo pose, `/usr/bin/python3 ~/policy_client.py --server http://<gpu ip>:8000 --module drop`. It only prints. Drive by hand and check the printed plans point the right way.
+5. **First moves:** relaunch the driver without `mode:=gamepad`, area clear, hand on the run-stop, start from a demo-like position, add `--go`. It asks for Enter before every move and clips targets to the demo joint ranges and to 10 cm (or 0.05 rad) per step.
+6. **Trials:** only after 5 looks sane, run full attempts and record success by start offset, as in the test plan above.
