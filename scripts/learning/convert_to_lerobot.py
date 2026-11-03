@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
 Convert recorded Stretch demos (~/demos/<episode>/, made by demo_logger.py) into a LeRobot dataset
-for training Diffusion Policy or VQ-BeT with LeRobot.
+for training ACT (or Diffusion Policy / VQ-BeT) with LeRobot.
 
-Run on the GPU computer (or anywhere LeRobot 0.6.x is installed), after copying ~/demos from the robot:
-    python convert_to_lerobot.py --demos ~/demos --out ~/datasets/stretch_grasp --stages grasp,teleop_grasp
+Run on the GPU computer (or anywhere LeRobot 0.6.x is installed), after copying ~/demos from the robot.
+Pick and drop are trained as separate modules, so each gets its own dataset (--stages chooses the frames):
+    python convert_to_lerobot.py --demos ~/demos --out ~/datasets/stretch_pick --stages grasp,teleop_grasp
+    python convert_to_lerobot.py --demos ~/demos --out ~/datasets/stretch_drop --stages teleop_drop --source teleop
+At the end it prints how many demos were kept and skipped (with the reason for each), and how many frames
+were left out of kept demos because their stage was not listed.
 
 What it builds, per frame (10 Hz, same as the recorder):
     observation.images.head   head camera image (240x320 RGB)
@@ -12,8 +16,14 @@ What it builds, per frame (10 Hz, same as the recorder):
     observation.state         [base_x, lift, arm, wrist_yaw, gripper, head_pan, head_tilt]
     action                    [base_x, lift, arm, wrist_yaw, gripper] of the NEXT frame (absolute targets)
     task                      e.g. "pick up the soup can"
-base_x = how far the base has moved forward since the start of the episode (m), from odometry.
-Head pan/tilt are observed but not commanded (keep the head still during demos).
+base_x (m) = how far the base has driven forward since the FIRST KEPT FRAME of the demo. It is the odometry
+displacement from that first frame (x, y in the odom frame), projected onto the heading the base had at that
+frame; sideways drift and turning are not part of it. So base_x is 0.0 at the start of every demo and says
+nothing about where the robot is on the floor: the policy only learns "drive this far from where I began".
+That is why demos must start from different base positions (e.g. the alignment test), otherwise the
+policy cannot learn to correct for the start position. The action's base_x is the next frame's base_x.
+Head pan/tilt are observed but not commanded (keep the head still during demos); the converter warns if
+the head moved more than HEAD_TOL during a demo.
 """
 import argparse, json, math, os, sys
 from pathlib import Path
@@ -25,21 +35,25 @@ ACTION_NAMES = ['base_x', 'lift', 'arm', 'wrist_yaw', 'gripper']
 JOINTS = {'lift': 'joint_lift', 'arm': 'wrist_extension', 'wrist_yaw': 'joint_wrist_yaw',
           'gripper': 'joint_gripper_finger_left', 'head_pan': 'joint_head_pan', 'head_tilt': 'joint_head_tilt'}
 H, W = 240, 320
+HEAD_TOL = 0.03   # rad (~1.7 deg): head pan/tilt change larger than this during one demo triggers a warning
 
 
 def load_episode(ep: Path, stages, wrist):
-    """Return (rows, meta) for one episode folder, keeping only frames in the chosen stages."""
+    """Return (rows, meta, other) for one episode folder.
+    rows = frames in the chosen stages; other = {stage: n} for frames left out because of the stage filter."""
     steps = ep / 'steps.jsonl'
-    if not steps.exists(): return [], {}
+    if not steps.exists(): return [], {}, {}
     meta = json.loads((ep / 'meta.json').read_text()) if (ep / 'meta.json').exists() else {}
-    rows = []
+    rows, other = [], {}
     for line in steps.read_text().splitlines():
         try: r = json.loads(line)
         except json.JSONDecodeError: continue          # a half-written last line if the logger was killed
-        if stages and r.get('stage') not in stages: continue
+        if stages and r.get('stage') not in stages:
+            other[r.get('stage')] = other.get(r.get('stage'), 0) + 1
+            continue
         if wrist and not r.get('wrist'): continue
         rows.append(r)
-    return rows, meta
+    return rows, meta, other
 
 
 def base_forward(rows):
@@ -53,6 +67,15 @@ def base_forward(rows):
             x, y = r['odom'][0] - o0[0], r['odom'][1] - o0[1]
             last = x * math.cos(yaw0) + y * math.sin(yaw0)
         out.append(last)
+    return out
+
+
+def head_moved(rows):
+    """{'head_pan': range, 'head_tilt': range} for each head joint that moved more than HEAD_TOL (rad)."""
+    out = {}
+    for k in ('head_pan', 'head_tilt'):
+        v = [float(r['joints'].get(JOINTS[k], 0.0)) for r in rows]
+        if v and max(v) - min(v) > HEAD_TOL: out[k] = round(max(v) - min(v), 3)
     return out
 
 
@@ -74,7 +97,9 @@ def main():
     ap.add_argument('--repo-id', default='local/stretch_demos', help='dataset name (only used locally)')
     ap.add_argument('--stages', default='grasp,teleop_grasp',
                     help='comma-separated stages to keep ("" = whole episode)')
-    ap.add_argument('--task', default='pick up the {object}', help='task text; {object} is filled in')
+    ap.add_argument('--task', default=None,
+                    help='task text for every demo; {object} is filled in. Default: the demo\'s own instruction from '
+                         'meta.json (e.g. "drop the soup can in the yellow container"), else "pick up the {object}"')
     ap.add_argument('--include-failed', action='store_true', help='also keep demos whose result is not OK')
     ap.add_argument('--source', choices=['all', 'teleop', 'scripted'], default='all')
     ap.add_argument('--wrist', action='store_true', help='include the wrist camera (frames without it are skipped)')
@@ -96,20 +121,27 @@ def main():
     ds = LeRobotDataset.create(repo_id=a.repo_id, fps=10, features=features, root=os.path.expanduser(a.out),
                                robot_type='stretch_re1', use_videos=a.videos)
 
-    kept, skipped = 0, []
+    kept, skipped, left_out, head_warn = 0, [], {}, []
     for ep in eps:
-        rows, meta = load_episode(ep, stages, a.wrist)
+        rows, meta, other = load_episode(ep, stages, a.wrist)
         src = meta.get('source', 'teleop' if '_teleop_' in ep.name else 'scripted')
-        why = None
-        if not meta: why = 'no meta.json (run unfinished?)'
-        elif meta.get('result') != 'OK' and not a.include_failed: why = f"result {meta.get('result')}"
-        elif a.source != 'all' and src != a.source: why = f'source {src}'
-        elif len(rows) < a.min_frames: why = f'{len(rows)} frames in stages {sorted(stages) or "all"}'
-        if why: skipped.append((ep.name, why)); continue
+        why = None                                           # (short reason for the summary, detail for the line)
+        if not meta: why = ('no meta.json (run unfinished?)', 'no meta.json')
+        elif meta.get('result') != 'OK' and not a.include_failed:
+            why = ('result not OK', f"result {meta.get('result')}")
+        elif a.source != 'all' and src != a.source: why = (f'source is not {a.source}', f'source {src}')
+        elif len(rows) < a.min_frames:
+            have = f'; the demo only has stages {sorted(k or "(none)" for k in other)}' if other else ''
+            why = ('too few frames in the listed stages', f'{len(rows)} frames in stages {sorted(stages) or "all"}{have}')
+        if why: skipped.append((ep.name, *why)); continue
 
+        for st, n in other.items(): left_out[st] = left_out.get(st, 0) + n
+        moved = head_moved(rows)
+        if moved: head_warn.append(ep.name); print(f'  ! {ep.name}: head moved during the demo {moved} rad - keep the head still')
         bx = base_forward(rows)
         states = [state_vector(r, b) for r, b in zip(rows, bx)]
-        task = a.task.format(object=meta.get('object', 'object').replace('_', ' '))
+        task = (a.task or meta.get('instruction') or 'pick up the {object}').format(
+            object=meta.get('object', 'object').replace('_', ' '))
         for i, r in enumerate(rows):
             nxt = states[min(i + 1, len(states) - 1)]          # action = where the robot is one step later
             frame = {'observation.images.head': load_image(ep / r['frame']),
@@ -123,8 +155,16 @@ def main():
         print(f'  + {ep.name}: {len(rows)} frames ({len(rows) / 10:.1f} s), {src}, "{task}"')
 
     ds.finalize()
-    for name, why in skipped: print(f'  - skipped {name}: {why}')
-    print(f'\n{kept} episodes, {ds.num_frames} frames -> {a.out}')
+    for name, _, detail in skipped: print(f'  - skipped {name}: {detail}')
+    print(f'\nKept {kept} of {len(eps)} demos, skipped {len(skipped)}.')
+    reasons = {}
+    for _, short, _ in skipped: reasons[short] = reasons.get(short, 0) + 1
+    for short, n in reasons.items(): print(f'    {n} x {short}')
+    if left_out:
+        print(f'Frames left out of the kept demos because their stage is not in --stages: '
+              + ', '.join(f'{st or "(none)"}: {n}' for st, n in sorted(left_out.items(), key=lambda kv: str(kv[0]))))
+    if head_warn: print(f'Head moved in {len(head_warn)} kept demo(s): {", ".join(head_warn)}')
+    print(f'{kept} episodes, {ds.num_frames} frames -> {a.out}')
     if kept == 0: sys.exit('nothing converted - check --stages / --source / results')
 
 

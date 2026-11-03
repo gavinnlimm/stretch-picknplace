@@ -88,12 +88,16 @@ Adaptive grasp, Oct 28 (one run each, all successful):
 
 Pipeline: record demos on the robot -> convert to a LeRobot dataset -> train on the lab GPU PC (RTX 5090) -> run the policy from the GPU PC.
 
-- **Record (robot):** every `full_auto_obj.sh` run is saved to `~/demos/` automatically. Teleoperated demos: drive with the gamepad (driver tab: `ros2 launch stretch_core stretch_driver.launch.py mode:=gamepad`, see [docs/gamepad_setup.md](docs/gamepad_setup.md)) and run `bash ~/record_demo.sh <object> grasp` in another tab. Fallback: relaunch the driver without `mode:=gamepad` and use `ros2 run stretch_core keyboard_teleop`. Optional wrist camera: `WRIST_TOPIC=<image topic> bash ~/record_demo.sh ...`. Keep the head still during demos. The stage label is currently `grasp` only; a label for the drop stage has not been added yet.
+- **Record (robot):** every `full_auto_obj.sh` run is saved to `~/demos/` automatically. Teleoperated demos: drive with the gamepad (driver tab: `ros2 launch stretch_core stretch_driver.launch.py mode:=gamepad`, see [docs/gamepad_setup.md](docs/gamepad_setup.md)) and run `bash ~/record_demo.sh <object> grasp` in another tab. Fallback: relaunch the driver without `mode:=gamepad` and use `ros2 run stretch_core keyboard_teleop`. Optional wrist camera: `WRIST_TOPIC=<image topic> bash ~/record_demo.sh ...`. Keep the head still during demos. Task `grasp` (default) records the pick at Table 1 with stage `teleop_grasp`; `bash ~/record_demo.sh <object> drop` records the drop into the yellow container at Table 2 with stage `teleop_drop`. `meta.json` stores the stage, the result (`OK`/`FAIL`) and whether the demo included a correction.
 - **Copy** `~/demos` from the robot to the GPU PC (e.g. `rsync -a hello-robot@<robot ip>:~/demos/ ~/gavin/demos/`).
-- **Convert (GPU PC):** `python scripts/learning/convert_to_lerobot.py --demos ~/gavin/demos --out ~/gavin/datasets/stretch_grasp --stages grasp,teleop_grasp`
+- **Convert (GPU PC),** one dataset per module:
+  - pick: `python scripts/learning/convert_to_lerobot.py --demos ~/gavin/demos --out ~/gavin/datasets/stretch_pick --stages grasp,teleop_grasp`
+  - drop: `python scripts/learning/convert_to_lerobot.py --demos ~/gavin/demos --out ~/gavin/datasets/stretch_drop --stages teleop_drop --source teleop`
   - state `[base_x, lift, arm, wrist_yaw, gripper, head_pan, head_tilt]`, action = next `[base_x, lift, arm, wrist_yaw, gripper]` (absolute), head image 240x320 (+ wrist with `--wrist`), 10 Hz.
-  - only successful demos by default; `--source teleop|scripted` to filter.
-  - **Not yet supported:** the pick-and-drop task needs the drop stage kept. A demo whose stage is not in `--stages` is dropped, so update the stage list before converting pick-and-drop demos.
+  - `base_x` is the forward distance driven since the first kept frame of the demo (odometry, projected on the starting heading), so it is 0 at the start of every demo. Demos need different starting base positions for the policy to learn to correct for them (the alignment test).
+  - only successful demos by default; `--source teleop|scripted` to filter. The task text is each demo's own instruction from `meta.json` unless `--task` is given.
+  - at the end it prints how many demos were kept and skipped, with the reason for each, and how many frames were left out because their stage is not in `--stages`. It warns if the head pan/tilt moved during a demo.
+  - tested on synthetic demos with a stub of LeRobot only; not yet run on real demos or the real LeRobot install.
 - **Train (GPU PC, LeRobot 0.6.1, environment `~/gavin/lerobot-env`):** `lerobot-train --policy.type=act` on that dataset. `--policy.type=diffusion` and `--policy.type=vqbet` also work on the same dataset and are kept as comparisons. See the [LeRobot ACT docs](https://huggingface.co/docs/lerobot/act).
 - **Deploy:** not written yet. LeRobot's `lerobot-rollout` targets SO-101 style arms, so a Stretch client has to be written.
 
