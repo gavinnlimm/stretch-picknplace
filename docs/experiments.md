@@ -62,3 +62,53 @@ Failure causes to use: object hidden from the camera, misaligned, gripper missed
 4. **Dry run:** driver in gamepad mode, head at the module's demo pose, `/usr/bin/python3 ~/policy_client.py --server http://<gpu ip>:8000 --module drop`. It only prints. Drive by hand and check the printed plans point the right way.
 5. **First moves:** relaunch the driver without `mode:=gamepad`, area clear, hand on the run-stop, start from a demo-like position, add `--go`. It asks for Enter before every move and clips targets to the demo joint ranges and to 10 cm (or 0.05 rad) per step.
 6. **Trials:** only after 5 looks sane, run full attempts and record success by start offset, as in the test plan above.
+
+## Drop: absolute-base vs relative-base ACT, first robot trials (Nov 5)
+
+**Why:** the first ACT drop model (`act_drop_chunk20`) takes the base position since the start of the run as an input. Every run starts with that value at 0, so the model can learn "drive about 38 cm" instead of "drive until the container is close". The retrained model (`act_drop_rel`: same 13 drop demos, 1348 frames, same ACT settings, chunk 20, 5000 steps) leaves the base position out of the state and predicts base movement per step instead. Training: loss 9.90 -> 0.37, L1 0.51 -> 0.165. On a training demo its average error is base 0.2 cm, lift 0.8 cm, arm 1.4 cm, gripper 0.005 (this checks loading, not generalisation).
+
+**Setup:** the can is held in the gripper, `drop_reset.py --back X` drives the robot X m back from the drop position (by odometry; the true gripper-to-container gap was not measured), every move is confirmed by hand, and the run is stopped by hand at the end.
+
+| Model | Reset `--back` | Measured gap | Base travel before the arm extended / run ended |
+|---|---|---|---|
+| absolute | 0.25 m | | 0.381 m |
+| absolute | 0.35 m | | 0.386 m |
+| absolute | 0.50 m | | 0.386 m |
+| absolute | 0.50 m | | 0.394 m |
+| relative | 0.40 m | | 0.338 m |
+| relative | 0.40 m | | 0.403 m |
+| relative | 0.20 m | about 15 cm (along the table) | 0.200 m |
+| relative | 0.35 m | about 28 cm (along the table) | 0.342 m |
+| relative, `--auto-release` | 0.35 m | about 27.5 cm (along the table) | 0.330 m |
+| relative, `--auto-release` | 0.50 m | not measured | 0.695 m |
+| relative, `--auto-release --release-open 0.03` | 0.35 m | about 32 cm (along the table) | 0.360 m |
+| relative, `--auto-release --release-open 0.03` | 0.15 m | not measured | 0.167 m |
+| relative, softer start grip (`--hold -0.195`), release +0.05 | 0.15 m | not measured | 0.135 m |
+| relative, softer start grip, scripted release | 0.35 m | about 33 cm (along the table) | not recorded |
+| relative, softer start grip, release +0.10 | 0.50 m (see note) | about 27.5 cm (along the table) | 0.327 m |
+
+**Result so far:** the absolute model drove 38–39 cm in all four runs although the start moved by 25 cm, so it is acting as a fixed-distance script, as suspected. For the relative model the two runs at 0.40 m differ by 6 cm, which hints at some dependence on the image, but 0.40 m is close to the distance the absolute model always drives, so these two runs cannot separate the models.
+
+**Relative model with a measured 15 cm gap:** the base drove only 0.20 m (18 steps), then lifted and extended the arm (arm 0.44 m, lift 0.93 m, inside the demo ranges) with the base planning 0.000 m for the rest of the run. This is the first run where the travel clearly follows the start distance (0.20 m here vs 0.38 m for the absolute model from any start), so the relative-base change works for this case. With a 28 cm gap the base drove 0.342 m, so across the two measured gaps the travel is the gap plus about 5–6 cm. Two runs, not a statistical result.
+
+**Failure in that run: no release.** The gripper only opened to -0.08 and the policy then stalled for about 8 steps, commanding almost no change (gripper target -0.07 to -0.08), so the can stayed in the gripper. The absolute-base model did release in earlier runs, so this is not a gripper or data limit in general. Hypothesis (untested): without the base position in its state the relative model has fewer cues about which phase it is in, so at the end pose (can held over the container) it settles on "stay still". The 28 cm run stalled the same way (gripper stuck at -0.076, arm 0.43–0.44, base planning 0), so it is 2 out of 2 so far. `policy_client.py --auto-release` (off by default) opens the gripper to -0.02 after 3 stalled steps; use it only to separate "did the approach put the can over the container" from "does the policy release", and report results with and without it.
+
+**With `--auto-release` (27.5 cm gap):** the base drove 0.330 m, the policy stalled with the gripper at about -0.06 and the arm at 0.45 m, the script opened the gripper to -0.02 after 3 stalled steps, and the can dropped into the container. First complete drop with the relative model; the release itself was scripted. The demos only opened the gripper slightly (-0.02 to -0.12), so the learned opening is small and leaves little margin.
+
+**Long start (reset 0.50 m, gap not measured):** the base drove 0.695 m, far more than the 0.38 m of the absolute model and more than the 0.20 and 0.34 m of the shorter starts, so the travel is not a fixed distance. The arm also came out early (0.18 m at the start), was pulled back in while the base kept driving, and extended again at the end. After the scripted release (gripper target -0.02) the can was still held in the gripper; the cause is not yet known.
+
+**With `--release-open 0.03` (32 cm gap):** the scripted release opened the gripper to +0.03 and the can fell into the container. With the release at -0.02 the can fell once (27.5 cm gap) and stuck once (long start), so -0.02 has too little margin and +0.03 worked in the one run so far.
+
+**Short start (reset 0.15 m, gap not recorded):** the base drove 0.167 m and the arm extended. The scripted release at +0.03 did not free the can this time (it stayed gripped), although it did at 32 cm. `drop_reset.py` opens the gripper to +0.10 and that freed it, so the scripted release was raised to allow up to +0.10 (the policy's own limit stays 0.05).
+
+**Short start again, softer grip at the start and release at +0.05:** the base drove 0.135 m, the arm extended, the scripted release fired at step 12 and the can was released. Two settings changed at once (the start hold in `drop_reset.py` from -0.21 to -0.195, and the release opening from +0.03 to +0.05), so this run does not show which of the two fixed the sticking. Gripping the can less tightly is the working hypothesis, because the reset closes to -0.21 while the can stops the fingers at about -0.197, so the gripper keeps squeezing.
+
+**Repeat at a 33 cm gap (softer start grip, scripted release):** reported as working; the base travel was not recorded.
+
+**Release +0.10, run without Enter prompts (27.5 cm gap):** the base drove 0.327 m, the policy stalled at step 13 (17.4 s into the run, about half the time of the earlier per-step runs), the scripted release opened the gripper to +0.10 and the can fell into the container. The reset was `--back 0.50`, but the measured gap was only 27.5 cm, so the base did not drive back the full distance; measure the gap rather than trusting `--back`.
+
+**Base travel against measured gap (relative model, six runs):** 15 cm gap -> 0.200 m, 27.5 cm -> 0.330 m and 0.327 m, 28 cm -> 0.342 m, 32 cm -> 0.360 m. The travel is the gap plus 4–6 cm each time, while the absolute model drove 0.38–0.39 m from every start.
+
+**Not yet recorded:** whether the can landed in the container in the earlier runs (fill in the trial log).
+
+**Next:** run the relative model at clearly different starts (about 0.20 and 0.50 m, ideally with the real gap measured). If its travel follows the start, the fix works; if it stays near 0.38 m, it is still memorising a distance. Then repeat with Diffusion Policy on the same dataset.
