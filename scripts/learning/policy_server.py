@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ACT policy server - runs on the GPU PC. The robot client (policy_client.py) sends the head image and the robot
+Policy server (ACT or Diffusion Policy) - runs on the GPU PC. The robot client (policy_client.py) sends the head image and the robot
 state; this returns the next chunk of actions.
 
     source ~/gavin/lerobot-env/bin/activate
@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import numpy as np
 from PIL import Image
 
-N_STATE, N_ACTION = 7, 5
+N_STATE, N_ACTION = 7, 5          # N_STATE becomes 6 for a --base-mode relative checkpoint (set when loading)
 
 
 def decode_image(b64):
@@ -30,20 +30,25 @@ def decode_image(b64):
 
 def load_real(ckpt, device):
     import torch
-    from lerobot.policies.act.modeling_act import ACTPolicy
-    from lerobot.policies.factory import make_pre_post_processors
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.policies.factory import get_policy_class, make_pre_post_processors
     from lerobot.policies.utils import prepare_observation_for_inference
     ckpt = os.path.expanduser(ckpt)
-    policy = ACTPolicy.from_pretrained(ckpt); policy.to(device); policy.eval()
+    cfg = PreTrainedConfig.from_pretrained(ckpt)                 # works for ACT and Diffusion Policy checkpoints
+    policy = get_policy_class(cfg.type).from_pretrained(ckpt); policy.to(device); policy.eval()
     pre, post = make_pre_post_processors(policy.config, pretrained_path=ckpt)
     n = policy.config.n_action_steps
-    print(f'loaded {ckpt}: chunk_size {policy.config.chunk_size}, n_action_steps {n}, device {device}')
+    global N_STATE
+    N_STATE = int(policy.config.input_features['observation.state'].shape[0])
+    print(f'loaded {cfg.type} policy {ckpt}: n_action_steps {n}, state {N_STATE} values '
+          f'({"relative" if N_STATE == 6 else "absolute"} base), device {device}')
 
     def act(rgb, state):
         obs = {'observation.images.head': np.array(rgb, np.uint8), 'observation.state': np.array(state, np.float32)}   # copies: torch wants writable arrays
         with torch.inference_mode():
             batch = prepare_observation_for_inference(obs, torch.device(device), None, 'stretch_re1')
             batch = pre(batch)
+            policy.reset()                                           # no history between requests (diffusion: n_obs_steps=1)
             chunk = policy.predict_action_chunk(batch)[:, :n]       # (1, n, 5), normalized
             chunk = post(chunk)                                      # back to metres / radians
         return chunk.squeeze(0).float().cpu().numpy()
@@ -65,7 +70,8 @@ def serve(act, port):
             self.send_response(code); self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
         def do_GET(self):
-            self._send(200, {'ok': True, 'state_dim': N_STATE, 'action_dim': N_ACTION})
+            self._send(200, {'ok': True, 'state_dim': N_STATE, 'action_dim': N_ACTION,
+                             'base_mode': 'relative' if N_STATE == 6 else 'absolute'})
         def do_POST(self):
             try:
                 req = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
@@ -88,14 +94,14 @@ def selftest(act, demo):
     import convert_to_lerobot as c
     demo = Path(os.path.expanduser(demo))
     rows, meta, _ = c.load_episode(demo, set(), False)
-    states = [c.state_vector(r, b) for r, b in zip(rows, c.base_forward(rows))]
+    states, actions = c.states_actions(rows, 'relative' if N_STATE == 6 else 'absolute')
     print(f'{demo.name}: {len(rows)} frames')
     errs = []
     for i in range(0, len(rows) - 20, max(1, (len(rows) - 20) // 6)):
         chunk = act(c.load_image(demo / rows[i]['frame']), states[i])
-        want = np.asarray([s[:N_ACTION] for s in states[i + 1:i + 1 + len(chunk)]])
+        want = np.asarray(actions[i:i + len(chunk)])
         n = min(len(chunk), len(want)); e = np.abs(chunk[:n] - want[:n]).mean(axis=0); errs.append(e)
-        print(f'  frame {i:4d}: mean |predicted - recorded| per [base_x lift arm yaw gripper] =', np.round(e, 3))
+        print(f'  frame {i:4d}: mean |predicted - recorded| per [base lift arm yaw gripper] =', np.round(e, 3))
     print('average:', np.round(np.mean(errs, axis=0), 3), '(metres / radians; small = the model reproduces the demo)')
 
 

@@ -84,6 +84,19 @@ def state_vector(r, bx):
     return [bx] + [float(j.get(JOINTS[k], 0.0)) for k in STATE_NAMES[1:]]
 
 
+def states_actions(rows, base_mode='absolute'):
+    """Observation states and actions for one demo.
+    absolute: state [base_x, lift, arm, wrist_yaw, gripper, head_pan, head_tilt]; action = next [base_x, lift, arm, yaw, gripper].
+    relative: base_x is NOT in the state (the policy must judge distance from the camera); the action's first value is
+              how far the base moves to the next frame (m per 0.1 s), the rest are the next joint targets."""
+    bx = base_forward(rows)
+    full = [state_vector(r, b) for r, b in zip(rows, bx)]
+    nxt = lambda i: full[min(i + 1, len(full) - 1)]
+    if base_mode == 'absolute':
+        return full, [nxt(i)[:len(ACTION_NAMES)] for i in range(len(full))]
+    return [f[1:] for f in full], [[nxt(i)[0] - full[i][0]] + nxt(i)[1:len(ACTION_NAMES)] for i in range(len(full))]
+
+
 def load_image(path: Path):
     im = Image.open(path).convert('RGB')
     if im.size != (W, H): im = im.resize((W, H))
@@ -105,16 +118,20 @@ def main():
     ap.add_argument('--wrist', action='store_true', help='include the wrist camera (frames without it are skipped)')
     ap.add_argument('--videos', action='store_true', help='store images as video (smaller; needs ffmpeg)')
     ap.add_argument('--min-frames', type=int, default=20)
+    ap.add_argument('--base-mode', choices=['absolute', 'relative'], default='absolute',
+                    help='relative: leave base_x out of the state and make the base action a per-step move (see states_actions)')
     a = ap.parse_args()
 
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     stages = set(s for s in a.stages.split(',') if s)
     eps = sorted(p for p in Path(os.path.expanduser(a.demos)).iterdir() if p.is_dir())
     img_type = 'video' if a.videos else 'image'
+    state_names = STATE_NAMES if a.base_mode == 'absolute' else STATE_NAMES[1:]
+    action_names = ACTION_NAMES if a.base_mode == 'absolute' else ['base_dx'] + ACTION_NAMES[1:]
     features = {
         'observation.images.head': {'dtype': img_type, 'shape': (H, W, 3), 'names': ['height', 'width', 'channels']},
-        'observation.state': {'dtype': 'float32', 'shape': (len(STATE_NAMES),), 'names': STATE_NAMES},
-        'action': {'dtype': 'float32', 'shape': (len(ACTION_NAMES),), 'names': ACTION_NAMES},
+        'observation.state': {'dtype': 'float32', 'shape': (len(state_names),), 'names': state_names},
+        'action': {'dtype': 'float32', 'shape': (len(action_names),), 'names': action_names},
     }
     if a.wrist:
         features['observation.images.wrist'] = {'dtype': img_type, 'shape': (H, W, 3), 'names': ['height', 'width', 'channels']}
@@ -138,15 +155,13 @@ def main():
         for st, n in other.items(): left_out[st] = left_out.get(st, 0) + n
         moved = head_moved(rows)
         if moved: head_warn.append(ep.name); print(f'  ! {ep.name}: head moved during the demo {moved} rad - keep the head still')
-        bx = base_forward(rows)
-        states = [state_vector(r, b) for r, b in zip(rows, bx)]
+        states, actions = states_actions(rows, a.base_mode)
         task = (a.task or meta.get('instruction') or 'pick up the {object}').format(
             object=meta.get('object', 'object').replace('_', ' '))
         for i, r in enumerate(rows):
-            nxt = states[min(i + 1, len(states) - 1)]          # action = where the robot is one step later
             frame = {'observation.images.head': load_image(ep / r['frame']),
                      'observation.state': np.asarray(states[i], np.float32),
-                     'action': np.asarray(nxt[:len(ACTION_NAMES)], np.float32),
+                     'action': np.asarray(actions[i], np.float32),
                      'task': task}
             if a.wrist: frame['observation.images.wrist'] = load_image(ep / r['wrist'])
             ds.add_frame(frame)
