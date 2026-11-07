@@ -174,3 +174,26 @@ Failure causes to use: object hidden from the camera, misaligned, gripper missed
 **Limits.** Five runs, one can, one setup (same distance from the table edge, same lighting, same table). It shows the model works over gaps from 8 to 42 cm here; it is not a general success rate. Arm reach was not varied. The 42 cm gap is near the upper end of the demo range (0.44 m base travel). The stall seen once at 25 cm earlier in the evening (base stopped at 0.085 m) was not reproduced and is still unexplained.
 
 **Motion.** The robot moves in a stop-and-go way, one step about every 1.8 s: the client waits for each move to finish before reading the camera and asking for the next plan, and its speed caps are below the demo speed. Sending the whole chunk as one trajectory would make it smooth; not done yet.
+
+
+## Drop: why the release stalled, and `act_drop_rel2_new` (Nov 7)
+
+**Why the old drop model stalled.** The old drop model (`act_drop_rel`, 13 demos) followed the gap but did not release. Two trials on Nov 7 (gripper cap for the drop raised from +0.05 to +0.14) showed it: in one run the arm began already out over the container (arm 0.451, base 0), and the gripper stayed at -0.11 to -0.13 for 20 steps; in the other (nominal gap 28 cm, base travel 0.289 m) the arm reached 0.449 m, the gripper opened from -0.21 to about -0.055 and stayed there for 25+ steps with the can still held and empty plans. The cap was not the cause. The old demos explain it: in all 16 usable old drop demos the arm is at its maximum (0.39 to 0.48 m) at the last frame, so the recordings end the moment the can drops, with the arm still out, and the gripper only opens to -0.02 to -0.12 (typically about -0.06), which is the value the policy stalled at. The pick demos, by contrast, end with the arm pulled in (0.007 to 0.045 m).
+
+**New data and model.** 10 new drop demos (Nov 7) recorded with the gap varied (15 to 35 cm), a wide release (gripper to +0.132, held open) and the arm pulled all the way in (final arm 0.018 to 0.064 m) before stopping; 1243 frames. `act_drop_rel2_new`: these 10 demos only, relative base, ACT chunk 20, 6000 steps; selftest average error lift 0.5 cm, arm 2.0 cm, gripper 0.011. `act_drop_rel2_all` (the 10 new plus 16 old drop demos, 2894 frames) was also trained (selftest arm 1.8 cm, gripper 0.009) but has not been tested on the robot.
+
+**Trials with `act_drop_rel2_new`, no scripted help** (no `--auto-release`). The gap is the distance the robot was backed up from the mark on the container with `drop_reset.py --back`, measured from where the previous run ended (within a few cm of the mark), so gaps are approximate and the can was held between the fingers at the start (gripper about -0.18):
+
+| Run | Nominal gap | Base travel | Result |
+|---|---|---|---|
+| 1 | not recorded | 0.188 m | worked: released, arm pulled in; stopped with Ctrl+C |
+| 2 | 28 cm | 0.250 m | worked; stopped by itself |
+| 3 | 35 cm | 0.000 m | froze at the start (19 steps, no motion, empty plans) |
+| 4 | 35 cm (same spot) | 0.000 m | froze again (33 steps) |
+| 5 | 35 cm (same spot) | 0.297 m | worked; stopped by itself |
+| 6 | 30 cm | 0.289 m | worked; stopped by itself |
+| 7 | 30 cm | 0.342 m | worked; stopped by itself |
+
+**Result:** 5 of 7 attempts worked, with the policy releasing (gripper opened to +0.13) and pulling the arm in by itself. In the working runs the base travel was within about 5 cm of the nominal gap. Both failures were freezes at the start at the 35 cm spot (first-step plan `base +0.000`); the third attempt at that spot worked, and what makes the difference is unknown. Possibly 35 cm is at the edge of the training range (one demo at 35 cm).
+
+**Limits.** 7 attempts, one can, one container, one setup. Gaps are approximate. `act_drop_rel2_all` untested, so it is not known whether the old demos help or hurt. The scripted release (`--auto-release`) is no longer needed with this model. `--stop-when-done` (opt-in) ends a run once the arm is in and the task is finished; it stopped all four runs it was used on.

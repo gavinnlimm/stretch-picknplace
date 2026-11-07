@@ -64,7 +64,7 @@ Per-run times: `results/object_trials.csv`.
 
 **Where it stands (Nov 6, 2026).** Everything below is a handful of runs, not a success rate.
 
-- **Drop:** the model follows the gap between the can and the container (base travel = gap + 4 to 6 cm in six runs) but stalls at the release, so a scripted release (`--auto-release`) is used and reported separately.
+- **Drop:** the first model followed the gap but stalled at the release: its demos ended with the arm still out and only a shallow release. A new model trained on 10 demos with a wide release and the arm pulled in (`act_drop_rel2_new`) released and retracted by itself in 5 of 7 attempts (gaps 28 to 35 cm); both failures were freezes at the start at one spot. Small sample, one can, one setup.
 - **Pick:** the model trained on 30 demos picked the can in 5 of 5 runs with the can 8, 18, 28, 36 and 42 cm along the table, with no scripted help (base travel within 3.7 cm of the gap). One setup, one can, five runs: not a general success rate. The robot moves in a stop-and-go way (one step about every 1.8 s).
 - **Key finding:** the state must not contain the absolute base position. It starts at 0 every run, so the first model learned a fixed ~38 cm drive. Training with a relative base (`--base-mode relative`) fixed that.
 - **Not done:** no success rates, no comparison with Diffusion Policy yet.
@@ -74,6 +74,7 @@ Per-run times: `results/object_trials.csv`.
 - Keep the head fixed within each set: pick pan -1.29, tilt -0.75; drop pan -1.38, tilt -0.60.
 - No base turning. The base only drives forward along the table; the arm reaches sideways. Vary the start position and arm distance between demos.
 - Start the pick demos with the gripper wide open, wider than the can.
+- End each drop demo with the gripper wide open and the arm pulled all the way in, and only then stop the recording. Demos that stop at the release, with the arm out, teach a policy that stalls there.
 - Mark a correction only for a real recovery from a mistake.
 
 **Workflow**
@@ -103,7 +104,7 @@ Per-run times: `results/object_trials.csv`.
    yes '' | /usr/bin/python3 ~/pick_reset.py --grip 0.13 && /usr/bin/python3 ~/policy_client.py --server http://localhost:8000 --module pick --go --seconds 90 --base-mode relative
    ```
 
-   For the drop, use `drop_reset.py --back <gap in m>` and `--module drop`, plus `--auto-release --release-open 0.10`. Scripted helps (`--hold-grip`, `--auto-grasp`, `--keep-open`, `--auto-release`) are fallbacks: always report results with and without them. Push the robot back to its start before each trial.
+   For the drop, use `drop_reset.py --back <gap in m>` and `--module drop`. `--stop-when-done` ends a run on its own once the task is finished. Scripted helps (`--hold-grip`, `--auto-grasp`, `--keep-open`, `--auto-release`) are fallbacks: always report results with and without them. Push the robot back to its start before each trial.
 
 ## Back up from the robot
 

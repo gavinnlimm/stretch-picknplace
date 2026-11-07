@@ -26,7 +26,7 @@ ACTION_JOINTS = ['lift', 'arm', 'wrist_yaw', 'gripper']             # order of a
 HEAD = {'pick': (-1.29, -0.75), 'drop': (-1.38, -0.60)}; HEAD_TOL = 0.08
 # joint ranges seen in the usable demos (+/- 0.05) - targets are clipped to these (arm >= 1 cm so it never presses its end stop)
 LIMITS = {'pick': {'lift': (0.61, 0.97), 'arm': (0.01, 0.56), 'wrist_yaw': (-0.05, 0.05), 'gripper': (-0.30, 0.14)},
-          'drop': {'lift': (0.68, 1.01), 'arm': (0.01, 0.52), 'wrist_yaw': (-0.05, 0.05), 'gripper': (-0.40, 0.05)}}
+          'drop': {'lift': (0.68, 1.01), 'arm': (0.01, 0.52), 'wrist_yaw': (-0.05, 0.05), 'gripper': (-0.40, 0.14)}}
 MAX_DELTA = {'lift': 0.10, 'arm': 0.10, 'wrist_yaw': 0.05, 'gripper': 0.15, 'base': 0.10}   # max move per step from now
 SPEED = {'lift': 0.10, 'arm': 0.10, 'wrist_yaw': 0.5, 'gripper': 0.3, 'base': 0.10}          # m/s or rad/s (slower than the demos)
 
@@ -145,6 +145,9 @@ def main():
     ap.add_argument('--hold-grip', type=float, default=None,
                     help='pick only: once the policy starts closing the gripper (its target goes below 0.0), close to this value (e.g. -0.15) and keep it '
                          'there for the rest of the run, so the can is held firmly and is not let go. A scripted help; report results with and without it')
+    ap.add_argument('--stop-when-done', action='store_true',
+                    help='stop on its own when the task is finished: drop = the gripper has opened and the arm has been pulled in and still for 5 steps; '
+                         'pick = the can has been grasped and the arm has been pulled in and still for 5 steps. Only ends the run; it does not change what the policy does')
     ap.add_argument('--grasp-close', type=float, default=GRASP_CLOSE, help=f'gripper position used by --auto-grasp (default {GRASP_CLOSE})')
     a = ap.parse_args()
     if not -0.30 <= a.grasp_close <= -0.10: sys.exit('--grasp-close must be between -0.30 and -0.10')
@@ -207,6 +210,7 @@ def main():
     if a.go: n.position_mode()
     print(f'{a.module}: {"MOVING" if a.go else "dry run"}; {a.base_mode} base; server {a.server}; start base pose recorded; {a.seconds:.0f} s max')
     start = time.time(); step = 0; still = 0; released = False; pstill = 0; grasped = False; holding = False
+    was_held = False; was_open = False; was_grasped = False; done_n = 0
     try:
         while time.time() - start < a.seconds:
             n.spin(0.3)                                   # catch up on all topics before reading them
@@ -251,6 +255,19 @@ def main():
                     pl['joints'][gj] = a.grip_floor
                     if abs(a.grip_floor - st[4]) <= 0.005: pl['joints'].pop(gj)
                     print(f'   grip-floor: not closing the gripper below {a.grip_floor:+.3f}')
+            if a.stop_when_done:
+                if a.module == 'drop':
+                    if st[4] < 0.0: was_held = True
+                    if was_held and st[4] > 0.05: was_open = True
+                    finished = was_open and st[2] < 0.03 and pl['dx'] == 0.0
+                else:
+                    if st[4] > 0.05: was_open = True
+                    if was_open and st[4] < 0.0: was_grasped = True
+                    finished = was_grasped and st[2] < 0.03 and pl['dx'] == 0.0
+                done_n = done_n + 1 if finished else 0
+                if done_n >= 5:
+                    print('   stop-when-done: the task looks finished (arm in, nothing left to do); stopping')
+                    break
             still = still + 1 if holding_still_over_container(st, chunk, a.n_exec, pl['dx']) else 0
             if a.auto_release and a.module == 'drop' and still >= 3:
                 rel = min(max(a.release_open, LIMITS['drop']['gripper'][0]), RELEASE_MAX)
