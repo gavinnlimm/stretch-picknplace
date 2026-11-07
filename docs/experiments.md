@@ -133,3 +133,25 @@ Failure causes to use: object hidden from the camera, misaligned, gripper missed
 
 
 **Pick base: result so far.** The base moved in the right direction when the can was moved (0.00 m at the first position, 0.063 m after moving the can about 15 cm), but covered well under half of the distance. With 15 demos the pick model does not yet follow the can's position along the table reliably, unlike the drop (travel = gap + 4 to 6 cm in six runs). The next step is more pick demos with the can at varied positions along the table and at varied distances from the table edge, with the gripper starting wide, then retraining with the relative base.
+
+
+## Pick: `act_pick_rel2` (30 demos, varied base travel), robot trials (Nov 6, evening)
+
+**Model:** `act_pick_rel2`: the 15 earlier pick demos plus 15 new ones recorded with the base travel (0.02 to 0.44 m at the grasp) and the arm reach (0.20 to 0.51 m) varied and the gripper starting wide; 4515 frames, relative base, ACT chunk 20, 8000 steps, same head pose. On a training demo the average error is lift 0.8 cm, arm 1.6 cm, gripper 0.016 (selftest). 6 of the 15 new demos carry `correction: True`; that flag does not affect training and has not been checked.
+
+**Gripper opening.** From the first trial the policy asked for a start opening of +0.13 to +0.14 on every step, but the client capped the pick gripper at +0.09 (the old demo range), so the fingers were never as wide as the model wanted. The cap was raised to +0.14 and `pick_reset.py` now opens to +0.13.
+
+**Trials.** The can was placed by hand at the nominal gap along the table, with the same distance from the near edge. Gaps were not re-measured after placing. Base travel is the last `state base` in the log.
+
+| Nominal gap | Base travel | Scripted help | Result |
+|---|---|---|---|
+| 10 cm | 0.102 m | none (gripper capped at +0.09) | picked, lifted and retracted; the policy closed by itself to about -0.03 |
+| 25 cm | 0.085 m | none | stalled: the base stopped at 0.085 m, then the plan was empty (arm stayed at 0.015). Possibly the can was near the end of the table; not verified |
+| 25 cm | 0.250 m | none (gripper capped at +0.09) | picked, but the policy opened the gripper itself while the arm was retracted (-0.025 to +0.083 over 10 steps) and the can fell |
+| 25 cm | not recorded | `--hold-grip -0.15`, wider opening | picked and held to the end |
+| 40 cm | 0.426 m | `--hold-grip -0.15`, wider opening | picked (arm 0.511 m), held at about -0.14, arm retracted |
+| 25 cm | 0.276 m | none, wider opening (+0.13 start) | picked and held to the end; the gripper stayed at about -0.02 and the policy idled after the retract |
+
+**What this shows.** With the new demos the base follows the can's position along the table (travel within about 3 cm of the nominal gap in 4 of 5 runs where it was recorded; one stall at 25 cm), and the policy now closes the gripper by itself, which the 15-demo model did not. The late opening is not in the old (Nov 3) demos: there the gripper closes to -0.13 to -0.24 and stays closed to the end. The new demos were not inspected for it. It happened once, with the +0.09 cap, and not in the last run with the wide start, so the wide opening may be the fix, but each condition has one run. `--hold-grip X` (once the policy starts to close, close to X and keep it) is a scripted help and is reported separately.
+
+**Limits.** One run per position; no success rate. Only 10, 25 and 40 cm have been tried, and only the soup can. The stall at 25 cm is unexplained.

@@ -56,10 +56,10 @@ def ask(msg):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--grip', type=float, default=GRIP,
-                    help=f'start opening of the gripper (default {GRIP}; the pick demos started between -0.12 and +0.05; up to 0.10 allowed, larger = wider)')
+                    help=f'start opening of the gripper (default {GRIP}; the pick demos started between -0.12 and +0.05; up to 0.14 allowed, larger = wider)')
     a = ap.parse_args()
-    if not -0.12 <= a.grip <= 0.10: sys.exit('--grip must be between -0.12 and 0.10')
-    if a.grip > 0.06: print('note: wider than any pick demo started (max 0.054); the policy has not seen this opening, so watch the first plan')
+    if not -0.12 <= a.grip <= 0.14: sys.exit('--grip must be between -0.12 and 0.14')
+    if a.grip > 0.14 - 1e-9: print('note: fully open range; the new pick demos started wide (the policy asks for about 0.13-0.14)')
     rclpy.init(); n = R(); n.position_mode()
     if ask('1. Arm in and wrist straight first, then lift to %.2f?' % LIFT):
         n.go(4, wrist_extension=ARM, joint_wrist_yaw=YAW)

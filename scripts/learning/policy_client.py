@@ -25,7 +25,7 @@ ACTION_JOINTS = ['lift', 'arm', 'wrist_yaw', 'gripper']             # order of a
 # head pose each module was recorded at (rad); the client refuses to run if the head is further than HEAD_TOL away
 HEAD = {'pick': (-1.29, -0.75), 'drop': (-1.38, -0.60)}; HEAD_TOL = 0.08
 # joint ranges seen in the usable demos (+/- 0.05) - targets are clipped to these (arm >= 1 cm so it never presses its end stop)
-LIMITS = {'pick': {'lift': (0.61, 0.97), 'arm': (0.01, 0.56), 'wrist_yaw': (-0.05, 0.05), 'gripper': (-0.30, 0.09)},
+LIMITS = {'pick': {'lift': (0.61, 0.97), 'arm': (0.01, 0.56), 'wrist_yaw': (-0.05, 0.05), 'gripper': (-0.30, 0.14)},
           'drop': {'lift': (0.68, 1.01), 'arm': (0.01, 0.52), 'wrist_yaw': (-0.05, 0.05), 'gripper': (-0.40, 0.05)}}
 MAX_DELTA = {'lift': 0.10, 'arm': 0.10, 'wrist_yaw': 0.05, 'gripper': 0.15, 'base': 0.10}   # max move per step from now
 SPEED = {'lift': 0.10, 'arm': 0.10, 'wrist_yaw': 0.5, 'gripper': 0.3, 'base': 0.10}          # m/s or rad/s (slower than the demos)
@@ -142,10 +142,14 @@ def main():
                     help=f'pick only: if the policy stalls with the arm out for 4 steps, close the gripper to --grasp-close yourself, then let the policy carry on. A scripted fallback; report results with and without it')
     ap.add_argument('--grip-floor', type=float, default=None,
                     help='never command the gripper more closed than this (e.g. -0.195). The can stops the fingers at about -0.19, so a target below that makes the gripper keep squeezing')
+    ap.add_argument('--hold-grip', type=float, default=None,
+                    help='pick only: once the policy starts closing the gripper (its target goes below 0.0), close to this value (e.g. -0.15) and keep it '
+                         'there for the rest of the run, so the can is held firmly and is not let go. A scripted help; report results with and without it')
     ap.add_argument('--grasp-close', type=float, default=GRASP_CLOSE, help=f'gripper position used by --auto-grasp (default {GRASP_CLOSE})')
     a = ap.parse_args()
     if not -0.30 <= a.grasp_close <= -0.10: sys.exit('--grasp-close must be between -0.30 and -0.10')
     if a.grip_floor is not None and not -0.30 <= a.grip_floor <= -0.10: sys.exit('--grip-floor must be between -0.30 and -0.10')
+    if a.hold_grip is not None and not -0.30 <= a.hold_grip <= -0.05: sys.exit('--hold-grip must be between -0.30 and -0.05')
     if a.keep_open is not None and not -0.12 <= a.keep_open <= 0.10: sys.exit('--keep-open must be between -0.12 and 0.10')
 
     import rclpy
@@ -202,7 +206,7 @@ def main():
         sys.exit(f'head is at pan {st[5]:.2f}, tilt {st[6]:.2f}; the {a.module} demos used {HEAD[a.module]} (+/-{HEAD_TOL}). Set the head first.')
     if a.go: n.position_mode()
     print(f'{a.module}: {"MOVING" if a.go else "dry run"}; {a.base_mode} base; server {a.server}; start base pose recorded; {a.seconds:.0f} s max')
-    start = time.time(); step = 0; still = 0; released = False; pstill = 0; grasped = False
+    start = time.time(); step = 0; still = 0; released = False; pstill = 0; grasped = False; holding = False
     try:
         while time.time() - start < a.seconds:
             n.spin(0.3)                                   # catch up on all topics before reading them
@@ -232,6 +236,15 @@ def main():
                     print(f'   auto-grasp: the policy has stalled for {pstill} steps; closing the gripper to {a.grasp_close:+.2f}')
                     pl['joints'] = {JOINTS['gripper']: a.grasp_close}; pl['secs_joints'] = 1.5; pl['dx'] = 0.0
                     grasped = True; a.keep_open = None
+            if a.hold_grip is not None and a.module == 'pick':
+                want_grip = float(np.asarray(chunk, float)[min(a.n_exec, len(chunk)) - 1][4])
+                if not holding and want_grip < 0.0: holding = True
+                if holding:
+                    gj = JOINTS['gripper']
+                    if abs(a.hold_grip - st[4]) > 0.005: pl['joints'][gj] = a.hold_grip
+                    else: pl['joints'].pop(gj, None)
+                    pl['secs_joints'] = max(pl['secs_joints'], 1.0)
+                    print(f'   hold-grip: policy wants the gripper at {want_grip:+.3f}; holding {a.hold_grip:+.3f}')
             if a.grip_floor is not None:
                 gj = JOINTS['gripper']
                 if gj in pl['joints'] and pl['joints'][gj] < a.grip_floor:
