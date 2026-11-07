@@ -65,7 +65,7 @@ Per-run times: `results/object_trials.csv`.
 **Where it stands (Nov 6, 2026).** Everything below is a handful of runs, not a success rate.
 
 - **Drop:** the model follows the gap between the can and the container (base travel = gap + 4 to 6 cm in six runs) but stalls at the release, so a scripted release (`--auto-release`) is used and reported separately.
-- **Pick:** the model trained on 30 demos follows the can's position along the table (tried at about 10, 25 and 40 cm, one run each), closes the gripper by itself and lifts. Some runs used `--hold-grip` (a scripted firmer grip); one 25 cm run needed no help.
+- **Pick:** the model trained on 30 demos picked the can in 5 of 5 runs with the can 8, 18, 28, 36 and 42 cm along the table, with no scripted help (base travel within 3.7 cm of the gap). One setup, one can, five runs: not a general success rate. The robot moves in a stop-and-go way (one step about every 1.8 s).
 - **Key finding:** the state must not contain the absolute base position. It starts at 0 every run, so the first model learned a fixed ~38 cm drive. Training with a relative base (`--base-mode relative`) fixed that.
 - **Not done:** no success rates, no comparison with Diffusion Policy yet.
 

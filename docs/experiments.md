@@ -155,3 +155,22 @@ Failure causes to use: object hidden from the camera, misaligned, gripper missed
 **What this shows.** With the new demos the base follows the can's position along the table (travel within about 3 cm of the nominal gap in 4 of 5 runs where it was recorded; one stall at 25 cm), and the policy now closes the gripper by itself, which the 15-demo model did not. The late opening is not in the old (Nov 3) demos: there the gripper closes to -0.13 to -0.24 and stays closed to the end. The new demos were not inspected for it. It happened once, with the +0.09 cap, and not in the last run with the wide start, so the wide opening may be the fix, but each condition has one run. `--hold-grip X` (once the policy starts to close, close to X and keep it) is a scripted help and is reported separately.
 
 **Limits.** One run per position; no success rate. Only 10, 25 and 40 cm have been tried, and only the soup can. The stall at 25 cm is unexplained.
+
+
+## Pick: five-run test at new distances, no scripted help (Nov 6, night)
+
+**Setup.** `act_pick_rel2`, run with `--base-mode relative` only: no `--hold-grip`, `--keep-open`, `--auto-grasp` or `--grip-floor`. The gripper starts at +0.13 (`pick_reset.py --grip 0.13`; the client now allows up to +0.14). The can was placed by hand at the nominal gap along the table, about 45 cm out from the gripper, the same distance from the near edge every time; the robot was pushed back to its start between runs. Each run lasted up to 50 s. Success = the can is in the gripper after the arm has retracted, at the end of the run (judged by eye).
+
+| Run | Nominal gap | Base travel | Difference | Arm at grasp | Result |
+|---|---|---|---|---|---|
+| 1 | 8 cm | 0.076 m | -0.4 cm | 0.510 | success |
+| 2 | 18 cm | 0.196 m | +1.6 cm | not read | success |
+| 3 | 28 cm | 0.263 m | -3.7 cm | not read | success |
+| 4 | 36 cm | 0.390 m | +3.0 cm | not read | success |
+| 5 | 42 cm | 0.423 m | +0.3 cm | 0.511 | success |
+
+**Result: 5 of 5 picks, no scripted help.** Base travel was within 3.7 cm of the nominal gap in every run (mean absolute error 1.8 cm). The gaps were placed by hand and not re-measured, so part of that difference is placement error. The gripper closed by itself to about -0.03 to -0.04 and held; in run 1 it loosened to +0.007 while idling after the retract (about 35 s in), and the can stayed held. The earlier drop of the can at the end (25 cm, gripper capped at +0.09) did not recur in these runs.
+
+**Limits.** Five runs, one can, one setup (same distance from the table edge, same lighting, same table). It shows the model works over gaps from 8 to 42 cm here; it is not a general success rate. Arm reach was not varied. The 42 cm gap is near the upper end of the demo range (0.44 m base travel). The stall seen once at 25 cm earlier in the evening (base stopped at 0.085 m) was not reproduced and is still unexplained.
+
+**Motion.** The robot moves in a stop-and-go way, one step about every 1.8 s: the client waits for each move to finish before reading the camera and asking for the next plan, and its speed caps are below the demo speed. Sending the whole chunk as one trajectory would make it smooth; not done yet.
