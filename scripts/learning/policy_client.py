@@ -91,6 +91,16 @@ def holding_still_over_container(state, actions, n_exec, dx):
     return state[2] >= 0.38 and dx == 0.0 and state[4] > -0.15 and abs(want_grip - state[4]) < 0.02
 
 
+GRASP_CLOSE = -0.20       # where the gripper sat holding the can (-0.19 .. -0.22)
+
+
+def stalled_at_can(state, actions, n_exec, dx):
+    """True when the arm is out, the base has stopped and the policy is no longer moving the arm: the stall seen at the
+    end of the pick approach (it hovers with the gripper open instead of closing)."""
+    a = np.asarray(actions, float); want_arm = float(a[min(n_exec, len(a)) - 1][2])
+    return state[2] >= 0.30 and dx == 0.0 and abs(want_arm - state[2]) < 0.015
+
+
 def head_ok(state, module):
     pan, tilt = HEAD[module]
     return abs(state[5] - pan) <= HEAD_TOL and abs(state[6] - tilt) <= HEAD_TOL
@@ -125,7 +135,18 @@ def main():
                          f'open the gripper to {RELEASE_OPEN} yourself and stop. A scripted fallback; report results with and without it')
     ap.add_argument('--release-open', type=float, default=RELEASE_OPEN,
                     help=f'gripper position used by --auto-release (default {RELEASE_OPEN}; larger = wider open, max {RELEASE_MAX})')
+    ap.add_argument('--keep-open', type=float, default=None,
+                    help='pick only: while the policy has not started to close the gripper (its target is above -0.12), '
+                         'hold the gripper at this opening instead (e.g. 0.10). A scripted help: the pick demos did not start wide enough for the can')
+    ap.add_argument('--auto-grasp', action='store_true',
+                    help=f'pick only: if the policy stalls with the arm out for 4 steps, close the gripper to --grasp-close yourself, then let the policy carry on. A scripted fallback; report results with and without it')
+    ap.add_argument('--grip-floor', type=float, default=None,
+                    help='never command the gripper more closed than this (e.g. -0.195). The can stops the fingers at about -0.19, so a target below that makes the gripper keep squeezing')
+    ap.add_argument('--grasp-close', type=float, default=GRASP_CLOSE, help=f'gripper position used by --auto-grasp (default {GRASP_CLOSE})')
     a = ap.parse_args()
+    if not -0.30 <= a.grasp_close <= -0.10: sys.exit('--grasp-close must be between -0.30 and -0.10')
+    if a.grip_floor is not None and not -0.30 <= a.grip_floor <= -0.10: sys.exit('--grip-floor must be between -0.30 and -0.10')
+    if a.keep_open is not None and not -0.12 <= a.keep_open <= 0.10: sys.exit('--keep-open must be between -0.12 and 0.10')
 
     import rclpy
     from rclpy.node import Node
@@ -181,7 +202,7 @@ def main():
         sys.exit(f'head is at pan {st[5]:.2f}, tilt {st[6]:.2f}; the {a.module} demos used {HEAD[a.module]} (+/-{HEAD_TOL}). Set the head first.')
     if a.go: n.position_mode()
     print(f'{a.module}: {"MOVING" if a.go else "dry run"}; {a.base_mode} base; server {a.server}; start base pose recorded; {a.seconds:.0f} s max')
-    start = time.time(); step = 0; still = 0; released = False
+    start = time.time(); step = 0; still = 0; released = False; pstill = 0; grasped = False
     try:
         while time.time() - start < a.seconds:
             n.spin(0.3)                                   # catch up on all topics before reading them
@@ -198,6 +219,25 @@ def main():
             print(f'[{time.time()-start:5.1f}s] step {step} ({ms} ms)  state base {st[0]:+.3f} lift {st[1]:.3f} arm {st[2]:.3f} grip {st[4]:+.3f}')
             print('   plan: ' + ', '.join(f'{k.replace("joint_", "")} -> {v:+.3f}' for k, v in pl['joints'].items()) + f'  base {pl["dx"]:+.3f} m')
             for note in pl['notes']: print('   clipped - ' + note)
+            if a.keep_open is not None and a.module == 'pick':
+                want_grip = float(np.asarray(chunk, float)[min(a.n_exec, len(chunk)) - 1][4])
+                if want_grip > -0.12:                                    # the policy is not closing yet
+                    if abs(a.keep_open - st[4]) > 0.005: pl['joints'][JOINTS['gripper']] = a.keep_open
+                    else: pl['joints'].pop(JOINTS['gripper'], None)
+                    pl['secs_joints'] = max(pl['secs_joints'], 1.0)
+                    print(f'   keep-open: policy wants the gripper at {want_grip:+.2f}; holding {a.keep_open:+.2f}')
+            if a.module == 'pick' and a.auto_grasp and not grasped:
+                pstill = pstill + 1 if stalled_at_can(st, chunk, a.n_exec, pl['dx']) else 0
+                if pstill >= 4:
+                    print(f'   auto-grasp: the policy has stalled for {pstill} steps; closing the gripper to {a.grasp_close:+.2f}')
+                    pl['joints'] = {JOINTS['gripper']: a.grasp_close}; pl['secs_joints'] = 1.5; pl['dx'] = 0.0
+                    grasped = True; a.keep_open = None
+            if a.grip_floor is not None:
+                gj = JOINTS['gripper']
+                if gj in pl['joints'] and pl['joints'][gj] < a.grip_floor:
+                    pl['joints'][gj] = a.grip_floor
+                    if abs(a.grip_floor - st[4]) <= 0.005: pl['joints'].pop(gj)
+                    print(f'   grip-floor: not closing the gripper below {a.grip_floor:+.3f}')
             still = still + 1 if holding_still_over_container(st, chunk, a.n_exec, pl['dx']) else 0
             if a.auto_release and a.module == 'drop' and still >= 3:
                 rel = min(max(a.release_open, LIMITS['drop']['gripper'][0]), RELEASE_MAX)
