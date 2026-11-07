@@ -5,9 +5,11 @@ Two parts:
 1. **Scripted pipeline (the baseline).** Moves an object from Table 1 to Table 2 on the lab's Stretch RE1. Nav2 drives, the head camera finds the object and the place tag. Works on 5 objects.
 2. **Learning pipeline.** Record teleoperated demos, train ACT (LeRobot) on the lab GPU, run the policy on the robot. Goal: replace the scripted grasp and drop with learned **pick** and **drop** modules. First robot trials work; see [Learning](#learning-from-demonstrations-act).
 
-![The Stretch RE1 picks up the soup can and drops it into the yellow container with the learned policies, sped up 3x](docs/pick_and_drop.gif)
-
-*The learned pick and drop on the Stretch RE1, sped up 3x.*
+<p align="center">
+  <img src="docs/pick.gif" alt="The Stretch RE1 drives along the table, reaches out and picks up the soup can with the learned ACT pick policy" width="49%">
+  <img src="docs/drop.gif" alt="The Stretch RE1 drives to the yellow container and drops the soup can into it with the learned ACT drop policy" width="49%">
+</p>
+<p align="center"><em>Left: the learned pick. Right: the learned drop. ACT policies on the Stretch RE1, 2x speed.</em></p>
 
 ## Scripted pipeline
 
