@@ -112,3 +112,24 @@ Failure causes to use: object hidden from the camera, misaligned, gripper missed
 **Not yet recorded:** whether the can landed in the container in the earlier runs (fill in the trial log).
 
 **Next:** run the relative model at clearly different starts (about 0.20 and 0.50 m, ideally with the real gap measured). If its travel follows the start, the fix works; if it stays near 0.38 m, it is still memorising a distance. Then repeat with Diffusion Policy on the same dataset.
+
+## Pick: relative-base ACT, first robot trials (Nov 6)
+
+**Model:** `act_pick_rel`: the 15 pick demos converted with the relative base, ACT chunk 20, 5000 steps. On a training demo the average error is lift 0.8 cm, arm 2.1 cm, gripper 0.007.
+
+**Start gripper opening:** the pick demos started with the gripper at -0.12 to +0.05, but even +0.04 was not wider than the can on the robot. A wider start (+0.10) was used with `--keep-open 0.10`, which holds that opening until the policy starts to close. At +0.10 the policy (which has not seen that opening) plans a gripper target of +0.02 to -0.06, i.e. it never plans a full close.
+
+**Attempts:**
+1. Arm went out to 0.435 m and the gripper passed the can without closing (stopped by hand).
+2. Same: the arm reached 0.42 m, the policy stalled with the gripper target near -0.05 and did not close.
+3. With `--auto-grasp` (if the arm is out and the policy has stalled for 4 steps, the script closes the gripper to -0.20): the arm reached 0.434 m with the base at +0.013 m, the script closed the gripper, and the policy then lifted the can (0.77 -> 0.89 m), pulled the arm back to 0.006 m and set the lift back to 0.78 m. The can was grasped and carried. The distance to the can was not recorded.
+
+4. Same, with `--grasp-close -0.195 --grip-floor -0.195` (no command below -0.195): grasped, lifted (0.76 -> 0.89 m) and retracted the arm to 0.02 m; the gripper reading while carrying was -0.18 (it was -0.19 with the harder grip). The base did not move in this run (the can was within arm reach from the start), so it does not test the base following the gap for the pick.
+
+5. Can moved about 15 cm further along the table (rough estimate, not measured): the base drove only 0.063 m (0.051 m on the first step, then about 0) and the arm went out to 0.43 m. The gripper never lined up with the can; the arm contact warning fired at the first step and the can ended up pushed against the arm, and the scripted close then caught it. Counted as a miss, not a success: the grasp worked by luck.
+
+**What this shows:** the approach, lift and retract are learned; the decision to close is not (the policy stalls at the can, the same stall as at the drop release). The grasp was very tight: the can stops the fingers at about -0.19 while the commands were -0.20 to -0.21, so the gripper kept squeezing. `--grip-floor` stops the client commanding below a chosen value.
+
+
+
+**Pick base: result so far.** The base moved in the right direction when the can was moved (0.00 m at the first position, 0.063 m after moving the can about 15 cm), but covered well under half of the distance. With 15 demos the pick model does not yet follow the can's position along the table reliably, unlike the drop (travel = gap + 4 to 6 cm in six runs). The next step is more pick demos with the can at varied positions along the table and at varied distances from the table edge, with the gripper starting wide, then retraining with the relative base.
