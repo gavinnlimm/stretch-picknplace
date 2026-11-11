@@ -104,6 +104,44 @@ class LLMLayer(unittest.TestCase):
         p, e = llm.plan(FixedLLM(bad, bad), 'pick up the soup can', HOME)
         self.assertTrue(e)
 
+    def test_sentence_around_json_is_accepted(self):
+        self.assertEqual(llm.parse_json('Here is the plan: {"reply": "ok", "steps": []} Hope it helps.')['reply'], 'ok')
+
+    def test_claude_request_shape(self):
+        captured = {}
+        class R:
+            def __enter__(s): return s
+            def __exit__(s, *a): pass
+            def read(s): return json.dumps({'content': [{'type': 'text', 'text': '{"reply": "x", "steps": []}'}]}).encode()
+        def fake_urlopen(req, timeout):
+            captured['body'] = json.loads(req.data); captured['headers'] = {k.lower(): v for k, v in req.headers.items()}; return R()
+        with mock.patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'}), mock.patch('urllib.request.urlopen', fake_urlopen):
+            out = llm.make('claude').chat([{'role': 'system', 'content': 'rules'}, {'role': 'user', 'content': 'hi'}])
+        b = captured['body']
+        self.assertEqual(b['model'], 'claude-sonnet-5-5'); self.assertEqual(b['system'], 'rules')
+        self.assertEqual(b['messages'], [{'role': 'user', 'content': 'hi'}])                # system moved out of messages
+        self.assertEqual(captured['headers']['x-api-key'], 'test-key'); self.assertIn('anthropic-version', captured['headers'])
+        self.assertIn('steps', out)
+
+    def test_local_qwen_needs_no_key_and_hits_ollama(self):
+        captured = {}
+        class R:
+            def __enter__(s): return s
+            def __exit__(s, *a): pass
+            def read(s): return json.dumps({'choices': [{'message': {'content': '<think>table1 first {maybe}</think>{"reply": "x", "steps": []}'}}]}).encode()
+        def fake_urlopen(req, timeout):
+            captured['url'] = req.full_url; captured['body'] = json.loads(req.data)
+            captured['headers'] = {k.lower() for k in req.headers}; return R()
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch('urllib.request.urlopen', fake_urlopen):
+            out = llm.make('local').chat([{'role': 'user', 'content': 'hi'}])
+        self.assertEqual(captured['url'], 'http://localhost:11434/v1/chat/completions')
+        self.assertEqual(captured['body']['model'], 'qwen3:8b'); self.assertNotIn('authorization', captured['headers'])
+        self.assertEqual(llm.parse_json(out)['reply'], 'x')                    # the <think> part is ignored
+
+    def test_missing_key_stops_with_a_message(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(SystemExit): llm.make('claude')
+
     def test_prompt_lists_every_skill(self):
         for name in skills.SKILLS: self.assertIn(name, llm.system_prompt())
 

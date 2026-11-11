@@ -2,9 +2,13 @@
 """
 The language part of the planner: turns a typed command into a plan (JSON) using only the skills in skills.py.
 
-Two back ends:
-  openai  calls the OpenAI chat API (default model gpt-4o). Needs OPENAI_API_KEY in the environment - never in a file in the repo.
+Four back ends:
+  local   an open-source model (Qwen) served on the lab GPU PC by Ollama, through the same OpenAI-style API. No key, no cost.
+          Default URL http://localhost:11434/v1/chat/completions (Ollama's port, tunnelled from the GPU PC like the policy servers).
+  claude  calls the Claude Messages API (default model claude-sonnet-5-5). Needs ANTHROPIC_API_KEY in the environment.
+  openai  calls the OpenAI chat API (default model gpt-4o). Needs OPENAI_API_KEY in the environment.
   mock    simple keyword rules, no network. For tests and for trying the executor without an API key.
+API keys go in the shell only (export ...), never in a file in the repo.
 
 Both return {"reply": "<one sentence to the person>", "steps": [{"skill": ..., "args": {...}}, ...]}
 (steps may be empty when the command can't be done; then "reply" says why).
@@ -49,9 +53,14 @@ def user_message(command, world, history=None):
 
 
 def parse_json(text):
-    """The model's answer -> dict. Accepts a ```json fenced block too."""
+    """The model's answer -> dict. Accepts a ```json fenced block, or a sentence before/after the JSON object."""
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.S)        # Qwen3 may "think" before answering
     m = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.S)
-    data = json.loads(m.group(1) if m else text)
+    if m:
+        text = m.group(1)
+    elif not text.strip().startswith('{') and '{' in text:
+        text = text[text.index('{'):text.rindex('}') + 1]
+    data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError('the answer is not a JSON object')
     data.setdefault('steps', []); data.setdefault('reply', '')
@@ -59,19 +68,39 @@ def parse_json(text):
 
 
 class OpenAILLM:
-    def __init__(self, model='gpt-4o', url='https://api.openai.com/v1/chat/completions', timeout=60):
+    """OpenAI's API, or any server that speaks the same API (Ollama, vLLM) when need_key=False."""
+    def __init__(self, model='gpt-4o', url='https://api.openai.com/v1/chat/completions', timeout=60, need_key=True):
         self.key = os.environ.get('OPENAI_API_KEY')
-        if not self.key:
+        if need_key and not self.key:
             raise SystemExit('set OPENAI_API_KEY in the environment first (e.g. export OPENAI_API_KEY=...; never put it in the repo)')
         self.model, self.url, self.timeout = model, url, timeout
 
     def chat(self, messages):
         body = json.dumps({'model': self.model, 'messages': messages, 'temperature': 0,
                            'response_format': {'type': 'json_object'}}).encode()
-        req = urllib.request.Request(self.url, data=body, headers={'Content-Type': 'application/json',
-                                                                   'Authorization': f'Bearer {self.key}'})
+        headers = {'Content-Type': 'application/json'}
+        if self.key: headers['Authorization'] = f'Bearer {self.key}'
+        req = urllib.request.Request(self.url, data=body, headers=headers)
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             return json.loads(r.read())['choices'][0]['message']['content']
+
+
+class ClaudeLLM:
+    def __init__(self, model='claude-sonnet-5-5', url='https://api.anthropic.com/v1/messages', timeout=60):
+        self.key = os.environ.get('ANTHROPIC_API_KEY')
+        if not self.key:
+            raise SystemExit('set ANTHROPIC_API_KEY in the environment first (e.g. export ANTHROPIC_API_KEY=...; never put it in the repo)')
+        self.model, self.url, self.timeout = model, url, timeout
+
+    def chat(self, messages):
+        system = '\n\n'.join(m['content'] for m in messages if m['role'] == 'system')
+        convo = [m for m in messages if m['role'] != 'system']
+        body = json.dumps({'model': self.model, 'max_tokens': 1024, 'temperature': 0,
+                           'system': system, 'messages': convo}).encode()
+        req = urllib.request.Request(self.url, data=body, headers={'content-type': 'application/json', 'x-api-key': self.key,
+                                                                   'anthropic-version': '2023-06-01'})
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            return ''.join(b.get('text', '') for b in json.loads(r.read())['content'] if b.get('type') == 'text')
 
 
 class MockLLM:
@@ -101,8 +130,16 @@ class MockLLM:
         return json.dumps({'reply': f'Moving the {obj.replace("_", " ")} to table 2.', 'steps': steps})
 
 
-def make(kind, model='gpt-4o'):
-    return OpenAILLM(model) if kind == 'openai' else MockLLM()
+DEFAULT_MODEL = {'local': 'qwen3:8b', 'claude': 'claude-sonnet-5-5', 'openai': 'gpt-4o', 'mock': 'mock'}
+LOCAL_URL = 'http://localhost:11434/v1/chat/completions'
+
+
+def make(kind, model=None, url=None):
+    model = model or DEFAULT_MODEL[kind]
+    if kind == 'local': return OpenAILLM(model, url or LOCAL_URL, timeout=120, need_key=False)
+    if kind == 'claude': return ClaudeLLM(model)
+    if kind == 'openai': return OpenAILLM(model)
+    return MockLLM()
 
 
 def plan(llm, command, world, history=None, max_fixes=1):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 LLM task planner for the Stretch - runs ON THE ROBOT (or anywhere for a dry run).
-A typed command becomes a plan of skills (skills.py) chosen by an LLM (llm.py). The plan is checked before anything
+A typed command becomes a plan of skills (skills.py) chosen by an LLM (llm.py: Qwen on the lab GPU by default; Claude, GPT-4o or a mock). The plan is checked before anything
 moves, then run one skill at a time with the existing scripts; each skill reports success or failure. On a failure
 the LLM is asked for a new plan from where the robot is now (shown to you before it runs).
 
@@ -9,8 +9,9 @@ the LLM is asked for a new plan from where the robot is now (shown to you before
     python3 planner.py "put the soup can in the yellow container" --llm mock
 
     # robot tab (driver in position mode, camera + Nav2 running, both policy servers + tunnels up, hand on the run-stop)
-    export OPENAI_API_KEY=...            # in the shell only, never in the repo
+    # default LLM: Qwen on the GPU PC (Ollama, port 11434, tunnelled like the policy servers); no key needed
     /usr/bin/python3 ~/planner/planner.py "put the soup can in the yellow container" --go
+    # or --llm claude / --llm openai with ANTHROPIC_API_KEY / OPENAI_API_KEY exported in the shell (never in the repo)
 
 Dry run by default: --go is needed to move the robot, and it asks once before running the plan. Ctrl+C stops it.
 Every run is appended to ~/planner_runs.jsonl (command, plan, each step's result and time) for success-rate counts.
@@ -102,8 +103,10 @@ def execute(command, model, world, cfg, go, max_replans=1, runner=run_shell, ask
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('command', help='what the robot should do, in plain words')
-    ap.add_argument('--llm', choices=['openai', 'mock'], default='openai')
-    ap.add_argument('--model', default='gpt-4o')
+    ap.add_argument('--llm', choices=['local', 'claude', 'openai', 'mock'], default='local',
+                    help='which LLM plans: local = Qwen on the GPU PC via Ollama (default); mock = keyword rules, no network')
+    ap.add_argument('--model', default=None, help='model name (default: qwen3:8b for local, claude-sonnet-5-5, gpt-4o)')
+    ap.add_argument('--llm-url', default=None, help=f'local only: the Ollama/vLLM chat URL (default {llm.LOCAL_URL})')
     ap.add_argument('--go', action='store_true', help='actually run the plan on the robot (default: dry run)')
     ap.add_argument('--at', choices=['home', 'table1', 'table2'], default='home', help='where the robot is now')
     ap.add_argument('--holding', default=None, help='object already in the gripper, if any (e.g. soup_can)')
@@ -115,8 +118,8 @@ def main():
     a = ap.parse_args()
     cfg = {'pick_server': a.pick_server, 'drop_server': a.drop_server, 'pick_flags': a.pick_flags, 'drop_flags': a.drop_flags}
     world = {'at': a.at, 'holding': a.holding}
-    rec = execute(a.command, llm.make(a.llm, a.model), world, cfg, a.go, a.max_replans)
-    rec.update({'llm': a.llm, 'model': a.model if a.llm == 'openai' else 'mock', 'cfg': cfg, 'go': a.go})
+    rec = execute(a.command, llm.make(a.llm, a.model, a.llm_url), world, cfg, a.go, a.max_replans)
+    rec.update({'llm': a.llm, 'model': a.model or llm.DEFAULT_MODEL[a.llm], 'cfg': cfg, 'go': a.go})
     if a.go:
         with open(LOG, 'a') as f: f.write(json.dumps(rec) + '\n')
         print(f'logged to {LOG}')
