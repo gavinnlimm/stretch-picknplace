@@ -258,7 +258,11 @@ def main():
             if a.stop_when_done:
                 if a.module == 'drop':
                     if st[4] < 0.0: was_held = True
-                    if was_held and st[4] > 0.05: was_open = True
+                    if was_held and st[4] > 0.05 and not was_open:
+                        was_open = True
+                        if st[2] < 0.30:          # the drop demos release with the arm 0.39-0.48 m out, over the container
+                            print(f'   early-release: the gripper opened with the arm only {st[2]:.2f} m out, not over the container; stopping (counts as a failure)')
+                            break
                     finished = was_open and st[2] < 0.03 and pl['dx'] == 0.0
                 else:
                     if st[4] > 0.05: was_open = True

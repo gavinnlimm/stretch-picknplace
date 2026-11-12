@@ -25,7 +25,29 @@ def quiet(f, *a, **k):
     with redirect_stdout(io.StringIO()): return f(*a, **k)
 
 
-class CheckPlan(unittest.TestCase):
+class WithScripted(unittest.TestCase):
+    """Tests that use the scripted baseline turn it on, then back to the default (off)."""
+    def setUp(self): skills.use_scripted(True)
+    def tearDown(self): skills.use_scripted(False)
+
+
+class LearnedOnly(unittest.TestCase):
+    def test_scripted_skills_are_off_by_default(self):
+        e = skills.check_plan([NAV1, {'skill': 'grasp_scripted', 'args': {'object': 'soup_can'}}], HOME)
+        self.assertIn('scripted skills are turned off', e[0])
+        self.assertNotIn('grasp_scripted', llm.system_prompt()); self.assertNotIn('place_scripted', llm.system_prompt())
+
+    def test_mock_refuses_other_objects_and_destinations(self):
+        for cmd in ('put the 7UP bottle in the container', 'put the soup can on table 2'):
+            p, e = llm.plan(llm.MockLLM(), cmd, HOME)
+            self.assertEqual(p['steps'], []); self.assertIn('scripted skills are off', p['reply'])
+
+    def test_learned_plan_still_works(self):
+        p, e = llm.plan(llm.MockLLM(), 'put the soup can in the yellow container', HOME)
+        self.assertEqual(e, []); self.assertEqual(p['steps'], [NAV1, PICK, NAV2, DROP])
+
+
+class CheckPlan(WithScripted):
     def test_standard_plan_is_valid(self):
         self.assertEqual(skills.check_plan([NAV1, PICK, NAV2, DROP], HOME), [])
 
@@ -56,7 +78,7 @@ class CheckPlan(unittest.TestCase):
         self.assertIn('too many steps', skills.check_plan([NAV1] * 13, HOME)[0])
 
 
-class GoalCheck(unittest.TestCase):
+class GoalCheck(WithScripted):
     G = {'object': 'soup_can', 'destination': 'yellow_container'}
 
     def test_full_plan_reaches_goal(self):
@@ -92,7 +114,7 @@ class GoalCheck(unittest.TestCase):
         self.assertEqual(e, []); self.assertIn('plan the whole task', f.seen[1][-1]['content'])
 
 
-class Commands(unittest.TestCase):
+class Commands(WithScripted):
     def test_pick_uses_pick_server_and_stop_when_done(self):
         cmds = skills.commands(PICK)
         self.assertIn('pick_reset.py --grip 0.13', cmds[0][1]); self.assertEqual(cmds[0][2], '\n\n\n')
@@ -100,7 +122,7 @@ class Commands(unittest.TestCase):
 
     def test_drop_keeps_the_can_and_uses_drop_server(self):
         cmds = skills.commands(DROP)
-        self.assertIn('drop_reset.py --back 0', cmds[0][1]); self.assertTrue(cmds[0][2].startswith('s\n'))
+        self.assertIn('drop_reset.py --back 0 --regrip --hold -0.195', cmds[0][1]); self.assertEqual(cmds[0][2], '\n\n\n')
         self.assertIn('--server http://localhost:8001 --module drop', cmds[1][1])
 
     def test_navigation_switches_mode_first(self):
@@ -116,7 +138,7 @@ class Commands(unittest.TestCase):
         self.assertTrue(skills.ok_nav(0, 'Goal finished with status: SUCCEEDED'))
 
 
-class LLMLayer(unittest.TestCase):
+class LLMLayer(WithScripted):
     def test_mock_soup_can_into_container(self):
         p, e = llm.plan(llm.MockLLM(), 'put the soup can in the yellow container', HOME)
         self.assertEqual(e, []); self.assertEqual(p['steps'], [NAV1, PICK, NAV2, DROP])
@@ -198,7 +220,7 @@ class LLMLayer(unittest.TestCase):
         self.assertEqual(captured['auth'], 'Bearer test-key'); self.assertIn('steps', out)
 
 
-class Executor(unittest.TestCase):
+class Executor(WithScripted):
     def fake_runner(self, fail_on=None):
         ran = []
         def run(cmd, typed):

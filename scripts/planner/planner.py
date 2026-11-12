@@ -16,7 +16,8 @@ the LLM is asked for a new plan from where the robot is now (shown to you before
 Dry run by default: --go is needed to move the robot, and it asks once before running the plan. Ctrl+C stops it.
 Every run is appended to ~/planner_runs.jsonl (command, plan, each step's result and time) for success-rate counts.
 Policy servers: pick on port 8000 (act_pick_rel2), drop on port 8001 (act_drop_rel2_new); change with --pick-server / --drop-server.
-STATUS: written Nov 11, tested offline (test_planner.py); not yet run on the robot.
+Learned skills only by default (navigate, learned pick/drop, ask for help); --allow-scripted adds the scripted grasp/place.
+STATUS: run on the robot Nov 11 with --llm mock and --llm local (Qwen); offline tests in test_planner.py.
 """
 import argparse, json, os, subprocess, sys, time
 
@@ -107,6 +108,7 @@ def main():
     ap.add_argument('--llm', choices=['local', 'claude', 'openai', 'mock'], default='local',
                     help='which LLM plans: local = Qwen on the GPU PC via Ollama (default); mock = keyword rules, no network')
     ap.add_argument('--model', default=None, help='model name (default: qwen3:8b for local, claude-sonnet-5-5, gpt-4o)')
+    ap.add_argument('--allow-scripted', action='store_true', help='also offer the scripted grasp/place (baseline); default: learned skills only')
     ap.add_argument('--think', action='store_true', help='local only: let Qwen3 "think" before answering (slower, ~15 s; compare plan quality)')
     ap.add_argument('--llm-url', default=None, help=f'local only: the Ollama/vLLM chat URL (default {llm.LOCAL_URL})')
     ap.add_argument('--go', action='store_true', help='actually run the plan on the robot (default: dry run)')
@@ -120,8 +122,9 @@ def main():
     a = ap.parse_args()
     cfg = {'pick_server': a.pick_server, 'drop_server': a.drop_server, 'pick_flags': a.pick_flags, 'drop_flags': a.drop_flags}
     world = {'at': a.at, 'holding': a.holding}
+    skills.use_scripted(a.allow_scripted)
     rec = execute(a.command, llm.make(a.llm, a.model, a.llm_url, a.think), world, cfg, a.go, a.max_replans)
-    rec.update({'llm': a.llm, 'model': a.model or llm.DEFAULT_MODEL[a.llm], 'think': a.think, 'cfg': cfg, 'go': a.go})
+    rec.update({'llm': a.llm, 'model': a.model or llm.DEFAULT_MODEL[a.llm], 'think': a.think, 'scripted': a.allow_scripted, 'cfg': cfg, 'go': a.go})
     if a.go:
         with open(LOG, 'a') as f: f.write(json.dumps(rec) + '\n')
         print(f'logged to {LOG}')

@@ -28,9 +28,7 @@ Skills (use only these, with exactly these argument names and values):
 {skills}
 
 Rules:
-- Prefer the LEARNED skills (pick, drop) when the object and target allow it; use grasp_scripted for objects the
-  learned pick was not trained on, and place_scripted when the person wants the object set down on table2 rather
-  than in the container.
+{skill_rule}
 - Every step's "needs" must hold, given the steps before it. Navigate before you pick or drop.
 - Objects to pick up are ALWAYS on table1, even when the robot is somewhere else. To move an object, go to table1
   and pick it up first. Do not ask the person to bring objects.
@@ -41,15 +39,7 @@ Rules:
   "table2" (set down on table2), "home", or null. A program checks that your steps reach this goal.
 
 Examples:
-Command: put the coke can in the container. Robot now: at home, holding nothing.
-{{"reply": "Taking the coke can to the container.", "goal": {{"object": "coke_can", "destination": "yellow_container"}},
- "steps": [{{"skill": "navigate", "args": {{"target": "table1"}}}}, {{"skill": "grasp_scripted", "args": {{"object": "coke_can"}}}},
-           {{"skill": "navigate", "args": {{"target": "table2"}}}}, {{"skill": "drop", "args": {{"container": "yellow_container"}}}}]}}
-Command: set the paper cup down on table 2. Robot now: at table2, holding nothing.
-{{"reply": "Fetching the paper cup from table 1.", "goal": {{"object": "paper_cup", "destination": "table2"}},
- "steps": [{{"skill": "navigate", "args": {{"target": "table1"}}}}, {{"skill": "grasp_scripted", "args": {{"object": "paper_cup"}}}},
-           {{"skill": "navigate", "args": {{"target": "table2"}}}}, {{"skill": "place_scripted", "args": {{}}}}]}}
-Command: water the plants. Robot now: at home, holding nothing.
+{examples}Command: water the plants. Robot now: at home, holding nothing.
 {{"reply": "I can't water plants with my skills.", "goal": null, "steps": []}}
 
 Answer with JSON only, in this form:
@@ -57,8 +47,35 @@ Answer with JSON only, in this form:
  "steps": [{{"skill": "<name>", "args": {{...}}}}]}}"""
 
 
+EXAMPLES_SCRIPTED = """Command: put the coke can in the container. Robot now: at home, holding nothing.
+{{"reply": "Taking the coke can to the container.", "goal": {{"object": "coke_can", "destination": "yellow_container"}},
+ "steps": [{{"skill": "navigate", "args": {{"target": "table1"}}}}, {{"skill": "grasp_scripted", "args": {{"object": "coke_can"}}}},
+           {{"skill": "navigate", "args": {{"target": "table2"}}}}, {{"skill": "drop", "args": {{"container": "yellow_container"}}}}]}}
+Command: set the paper cup down on table 2. Robot now: at table2, holding nothing.
+{{"reply": "Fetching the paper cup from table 1.", "goal": {{"object": "paper_cup", "destination": "table2"}},
+ "steps": [{{"skill": "navigate", "args": {{"target": "table1"}}}}, {{"skill": "grasp_scripted", "args": {{"object": "paper_cup"}}}},
+           {{"skill": "navigate", "args": {{"target": "table2"}}}}, {{"skill": "place_scripted", "args": {{}}}}]}}
+"""
+
+EXAMPLES_LEARNED = """Command: please take the soup can over to the yellow container. Robot now: at table2, holding nothing.
+{{"reply": "Fetching the soup can from table 1.", "goal": {{"object": "soup_can", "destination": "yellow_container"}},
+ "steps": [{{"skill": "navigate", "args": {{"target": "table1"}}}}, {{"skill": "pick", "args": {{"object": "soup_can"}}}},
+           {{"skill": "navigate", "args": {{"target": "table2"}}}}, {{"skill": "drop", "args": {{"container": "yellow_container"}}}}]}}
+Command: put the coke can in the container. Robot now: at home, holding nothing.
+{{"reply": "I can only pick up the soup can.", "goal": null, "steps": []}}
+"""
+
+RULE_SCRIPTED = """- Prefer the LEARNED skills (pick, drop) when the object and target allow it; use grasp_scripted for objects the
+  learned pick was not trained on, and place_scripted when the person wants the object set down on table2 rather
+  than in the container."""
+RULE_LEARNED = """- Only the learned skills are available: the robot can only pick up the soup can, and only drop it into the yellow
+  container. For other objects or destinations, return no steps and say why in "reply"."""
+
+
 def system_prompt():
-    return SYSTEM.format(skills=skills.describe_skills())
+    scripted = 'grasp_scripted' in skills.ENABLED
+    return SYSTEM.format(skills=skills.describe_skills(), skill_rule=RULE_SCRIPTED if scripted else RULE_LEARNED,
+                         examples=EXAMPLES_SCRIPTED if scripted else EXAMPLES_LEARNED)
 
 
 def user_message(command, world, history=None):
@@ -139,6 +156,10 @@ class MockLLM:
             return json.dumps({'reply': 'I did not recognise an object I can pick up.', 'steps': []})
         into_container = any(w in cmd for w in ('container', 'bin', 'drop', 'basket', ' in '))
         steps = [] if at == 'table1' else [{'skill': 'navigate', 'args': {'target': 'table1'}}]
+        scripted = 'grasp_scripted' in skills.ENABLED
+        if not scripted and (obj not in skills.LEARNED_OBJECTS or not into_container):
+            return json.dumps({'reply': 'I can only pick up the soup can and drop it in the yellow container (scripted skills are off).',
+                               'goal': None, 'steps': []})
         if obj in skills.LEARNED_OBJECTS:
             steps.append({'skill': 'pick', 'args': {'object': obj}})
         else:

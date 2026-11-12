@@ -97,6 +97,16 @@ SKILLS = {
 }
 
 
+SCRIPTED = ('grasp_scripted', 'place_scripted')
+ENABLED = set(SKILLS) - set(SCRIPTED)            # default: learned skills only (scripted baseline off; Gavin, Nov 11)
+
+
+def use_scripted(on):
+    """Turn the scripted grasp/place on or off for planning and checking."""
+    global ENABLED
+    ENABLED = set(SKILLS) if on else set(SKILLS) - set(SCRIPTED)
+
+
 def describe_skills():
     """Text for the LLM prompt: one block per skill with its arguments, needs and effect."""
     lines = []
@@ -104,6 +114,7 @@ def describe_skills():
                  'grasp_scripted': 'at table1, gripper empty', 'place_scripted': 'at table2, holding an object',
                  'ask_for_help': 'none'}
     for name, s in SKILLS.items():
+        if name not in ENABLED: continue
         args = ', '.join(f'{k}: one of {list(v)}' if v else f'{k}: free text' for k, v in s['args'].items()) or 'none'
         lines.append(f'- {name}({args})\n    {s["about"]}\n    needs: {needs_txt[name]}')
     return '\n'.join(lines)
@@ -117,6 +128,8 @@ def check_step(step, world):
     name = step['skill']
     if name not in SKILLS:
         return f'unknown skill "{name}"'
+    if name not in ENABLED:
+        return f'"{name}" is not available (scripted skills are turned off)'
     args = step.get('args') or {}
     if not isinstance(args, dict):
         return f'{name}: "args" must be an object'
@@ -230,8 +243,10 @@ def commands(step, cfg=None):
                 ('learned pick (ACT)', ROS + f'{PY} ~/policy_client.py --server {c["pick_server"]} --module pick --go '
                  f'--seconds {c["pick_seconds"]} --base-mode relative --stop-when-done {c["pick_flags"]}'.rstrip(), None, ok_policy)]
     if name == 'drop':
-        # drop_reset answers: s = keep the can (skip opening the gripper), Enter = lift/arm pose, Enter = head pose
-        return [('drop reset (keep the can, carry pose, head to the drop pose)', ROS + f'{PY} ~/drop_reset.py --back 0', 's\n\n\n', ok_rc),
+        # drop_reset --regrip: tighten on the held can to the demo grip (-0.195) without opening, carry pose, head pose
+        # (Nov 11: starting the drop with the pick's loose grip, -0.035, the policy released at once, next to the robot)
+        return [('drop reset (re-grip the can to -0.195, carry pose, head to the drop pose)',
+                 ROS + f'{PY} ~/drop_reset.py --back 0 --regrip --hold -0.195', '\n\n\n', ok_rc),
                 ('learned drop (ACT)', ROS + f'{PY} ~/policy_client.py --server {c["drop_server"]} --module drop --go '
                  f'--seconds {c["drop_seconds"]} --base-mode relative --stop-when-done {c["drop_flags"]}'.rstrip(), None, ok_policy)]
     if name == 'grasp_scripted':

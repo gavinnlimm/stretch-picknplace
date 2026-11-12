@@ -59,11 +59,17 @@ def main():
     ap.add_argument('--back', type=float, default=0.35, help='metres to drive straight back (0 = do not move the base)')
     ap.add_argument('--hold', type=float, default=GRIP_HOLD,
                     help=f'gripper position when closing on the can (default {GRIP_HOLD}; a value nearer 0, e.g. -0.19, squeezes less)')
+    ap.add_argument('--regrip', action='store_true',
+                    help='the can is already held (e.g. after the learned pick): tighten the gripper to --hold WITHOUT opening it first, '
+                         'so the drop starts with the grip the drop demos had (-0.18 to -0.21; the learned pick holds at about -0.04)')
     a = ap.parse_args()
     if not 0.0 <= a.back <= 0.6: sys.exit('--back must be between 0 and 0.6 m')
     rclpy.init(); n = R(); n.position_mode()
 
-    if ask('1. Open the gripper?'):
+    if a.regrip:
+        if ask(f'1. Tighten the gripper on the held can to {a.hold:+.3f} (no opening)?'):
+            n.go(3, joint_gripper_finger_left=min(max(a.hold, -0.30), -0.10))
+    elif ask('1. Open the gripper?'):
         n.go(3, joint_gripper_finger_left=GRIP_OPEN)
         input('   Put the can between the fingers and hold it there, then press Enter to close...')
         n.go(3, joint_gripper_finger_left=min(max(a.hold, -0.30), -0.10))
