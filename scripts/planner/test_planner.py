@@ -56,6 +56,42 @@ class CheckPlan(unittest.TestCase):
         self.assertIn('too many steps', skills.check_plan([NAV1] * 13, HOME)[0])
 
 
+class GoalCheck(unittest.TestCase):
+    G = {'object': 'soup_can', 'destination': 'yellow_container'}
+
+    def test_full_plan_reaches_goal(self):
+        self.assertEqual(skills.check_goal(self.G, [NAV1, PICK, NAV2, DROP], HOME), [])
+
+    def test_plan_that_stops_early_is_rejected(self):          # what Qwen did on Nov 11
+        self.assertIn('never picks up', skills.check_goal(self.G, [NAV1], HOME)[0])
+
+    def test_plan_without_delivery_is_rejected(self):
+        self.assertIn('never gets the soup_can to yellow_container', skills.check_goal(self.G, [NAV1, PICK, NAV2], HOME)[0])
+
+    def test_missing_goal_is_rejected(self):
+        self.assertIn('add a "goal"', skills.check_goal(None, [NAV1], HOME)[0])
+
+    def test_refusal_needs_no_goal(self):
+        self.assertEqual(skills.check_goal(None, [], HOME), [])
+
+    def test_go_home(self):
+        self.assertEqual(skills.check_goal({'object': None, 'destination': 'home'}, [{'skill': 'navigate', 'args': {'target': 'home'}}], {'at': 'table2', 'holding': None}), [])
+        self.assertTrue(skills.check_goal({'object': None, 'destination': 'home'}, [NAV1], HOME))
+
+    def test_ask_for_help_is_exempt(self):
+        self.assertEqual(skills.check_goal(self.G, [{'skill': 'ask_for_help', 'args': {'message': 'help'}}], HOME), [])
+
+    def test_already_holding_counts(self):
+        self.assertEqual(skills.check_goal(self.G, [NAV2, DROP], {'at': 'table1', 'holding': 'soup_can'}), [])
+
+    def test_incomplete_plan_is_sent_back_and_fixed(self):
+        short = json.dumps({'reply': '', 'goal': self.G, 'steps': [NAV1]})
+        full = json.dumps({'reply': 'ok', 'goal': self.G, 'steps': [NAV1, PICK, NAV2, DROP]})
+        f = FixedLLM(short, full)
+        p, e = llm.plan(f, 'grab the soup and toss it in the bin', HOME)
+        self.assertEqual(e, []); self.assertIn('plan the whole task', f.seen[1][-1]['content'])
+
+
 class Commands(unittest.TestCase):
     def test_pick_uses_pick_server_and_stop_when_done(self):
         cmds = skills.commands(PICK)
@@ -94,7 +130,7 @@ class LLMLayer(unittest.TestCase):
 
     def test_bad_plan_is_sent_back_once_and_fixed(self):
         bad = json.dumps({'reply': '', 'steps': [PICK]})                       # pick from home: invalid
-        good = json.dumps({'reply': 'ok', 'steps': [NAV1, PICK]})
+        good = json.dumps({'reply': 'ok', 'goal': {'object': 'soup_can', 'destination': None}, 'steps': [NAV1, PICK]})
         f = FixedLLM(bad, good)
         p, e = llm.plan(f, 'pick up the soup can', HOME)
         self.assertEqual(e, []); self.assertIn('must be at table1', f.seen[1][-1]['content'])
@@ -136,6 +172,9 @@ class LLMLayer(unittest.TestCase):
             out = llm.make('local').chat([{'role': 'user', 'content': 'hi'}])
         self.assertEqual(captured['url'], 'http://localhost:11434/v1/chat/completions')
         self.assertEqual(captured['body']['model'], 'qwen3:8b'); self.assertNotIn('authorization', captured['headers'])
+        self.assertEqual(captured['body']['reasoning_effort'], 'none')          # Qwen3 thinking switched off
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertNotIn('reasoning_effort', llm.make('local', think=True).extra)   # --think leaves it on
         self.assertEqual(llm.parse_json(out)['reply'], 'x')                    # the <think> part is ignored
 
     def test_missing_key_stops_with_a_message(self):

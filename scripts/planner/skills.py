@@ -149,6 +149,43 @@ def check_plan(steps, world, max_steps=12):
     return errors
 
 
+DESTINATIONS = ('yellow_container', 'table2', 'home')
+
+
+def check_goal(goal, steps, world):
+    """Errors if the plan does not finish what its stated goal says - catches plans that stop early
+    (Nov 11: Qwen planned only "navigate to table1" for "grab the soup and toss it in the bin").
+    goal = {"object": <object or null>, "destination": "yellow_container" | "table2" | "home" | null}."""
+    if not steps:
+        return []                                    # a refusal: nothing will run
+    if any(st.get('skill') == 'ask_for_help' for st in steps):
+        return []                                    # the person takes over the rest
+    if not isinstance(goal, dict) or set(goal) != {'object', 'destination'}:
+        return ['add a "goal" with "object" and "destination" (either may be null)']
+    obj, dest = goal['object'], goal['destination']
+    if obj is not None and obj not in SCRIPTED_OBJECTS + LEARNED_OBJECTS:
+        return [f'goal object must be one of {sorted(set(SCRIPTED_OBJECTS + LEARNED_OBJECTS))} or null, got {obj!r}']
+    if dest is not None and dest not in DESTINATIONS:
+        return [f'goal destination must be one of {list(DESTINATIONS)} or null, got {dest!r}']
+    w, got, done = dict(world), world['holding'] == obj and obj is not None, None
+    for st in steps:
+        name, args = st['skill'], st.get('args') or {}
+        if name in ('pick', 'grasp_scripted') and args.get('object') == obj: got = True
+        if got and name == 'drop': done = 'yellow_container'
+        if got and name == 'place_scripted': done = 'table2'
+        w = apply(st, w)
+    errs = []
+    if obj is not None and not got:
+        errs.append(f'the plan never picks up the {obj}')
+    if obj is not None and dest in ('yellow_container', 'table2') and done != dest:
+        errs.append(f'the plan never gets the {obj} to {dest} (it must end with the object delivered)')
+    if obj is not None and dest is None and w['holding'] != obj:
+        errs.append(f'the plan should end holding the {obj}')
+    if dest == 'home' and w['at'] != 'home':
+        errs.append('the plan should end at home')
+    return [e + '; plan the whole task' for e in errs]
+
+
 def apply(step, world):
     return SKILLS[step['skill']]['effect'](world, step.get('args') or {})
 
@@ -174,7 +211,10 @@ DEFAULTS = {
     'drop_flags': '',
 }
 ROS = 'source ~/ros_env.sh && '
-NAV_MODE = 'ros2 service call /switch_to_navigation_mode std_srvs/srv/Trigger > /dev/null && '
+# the driver sometimes drops a service reply (seen Nov 11): try 3 times, 10 s each, instead of waiting forever
+NAV_MODE = ('(for i in 1 2 3; do timeout 10 ros2 service call /switch_to_navigation_mode std_srvs/srv/Trigger > /dev/null && exit 0; '
+            'echo "no reply from the driver, retrying"; done; echo "could not switch to navigation mode"; exit 1) && ')
+NAV_TIMEOUT = 180                            # s; a Nav2 drive that never finishes counts as a failure
 PY = '/usr/bin/python3 -u'
 
 
@@ -184,7 +224,7 @@ def commands(step, cfg=None):
     name, a = step['skill'], step.get('args') or {}
     if name == 'navigate':
         script = {'table1': '~/t1.sh', 'table2': '~/t2.sh', 'home': '~/go_home.sh'}[a['target']]
-        return [(f'Nav2 to {a["target"]}', ROS + NAV_MODE + f'bash {script}', None, ok_nav)]
+        return [(f'Nav2 to {a["target"]}', ROS + NAV_MODE + f'timeout {NAV_TIMEOUT} bash {script}', None, ok_nav)]
     if name == 'pick':
         return [('pick reset (arm in, gripper open, head to the pick pose)', ROS + f'{PY} ~/pick_reset.py --grip 0.13', '\n\n\n', ok_rc),
                 ('learned pick (ACT)', ROS + f'{PY} ~/policy_client.py --server {c["pick_server"]} --module pick --go '

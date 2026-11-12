@@ -28,6 +28,7 @@ LOG = os.path.expanduser('~/planner_runs.jsonl')
 
 def show_plan(p, cfg):
     print(f'\nPlan: {p.get("reply", "")}')
+    if p.get('goal'): print(f'  goal: {p["goal"]}')
     for i, st in enumerate(p['steps'], 1):
         args = ', '.join(f'{k}={v}' for k, v in (st.get('args') or {}).items())
         print(f'  {i}. {st["skill"]}({args})')
@@ -106,6 +107,7 @@ def main():
     ap.add_argument('--llm', choices=['local', 'claude', 'openai', 'mock'], default='local',
                     help='which LLM plans: local = Qwen on the GPU PC via Ollama (default); mock = keyword rules, no network')
     ap.add_argument('--model', default=None, help='model name (default: qwen3:8b for local, claude-sonnet-5-5, gpt-4o)')
+    ap.add_argument('--think', action='store_true', help='local only: let Qwen3 "think" before answering (slower, ~15 s; compare plan quality)')
     ap.add_argument('--llm-url', default=None, help=f'local only: the Ollama/vLLM chat URL (default {llm.LOCAL_URL})')
     ap.add_argument('--go', action='store_true', help='actually run the plan on the robot (default: dry run)')
     ap.add_argument('--at', choices=['home', 'table1', 'table2'], default='home', help='where the robot is now')
@@ -118,8 +120,8 @@ def main():
     a = ap.parse_args()
     cfg = {'pick_server': a.pick_server, 'drop_server': a.drop_server, 'pick_flags': a.pick_flags, 'drop_flags': a.drop_flags}
     world = {'at': a.at, 'holding': a.holding}
-    rec = execute(a.command, llm.make(a.llm, a.model, a.llm_url), world, cfg, a.go, a.max_replans)
-    rec.update({'llm': a.llm, 'model': a.model or llm.DEFAULT_MODEL[a.llm], 'cfg': cfg, 'go': a.go})
+    rec = execute(a.command, llm.make(a.llm, a.model, a.llm_url, a.think), world, cfg, a.go, a.max_replans)
+    rec.update({'llm': a.llm, 'model': a.model or llm.DEFAULT_MODEL[a.llm], 'think': a.think, 'cfg': cfg, 'go': a.go})
     if a.go:
         with open(LOG, 'a') as f: f.write(json.dumps(rec) + '\n')
         print(f'logged to {LOG}')

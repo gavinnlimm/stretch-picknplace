@@ -32,11 +32,29 @@ Rules:
   learned pick was not trained on, and place_scripted when the person wants the object set down on table2 rather
   than in the container.
 - Every step's "needs" must hold, given the steps before it. Navigate before you pick or drop.
+- Objects to pick up are ALWAYS on table1, even when the robot is somewhere else. To move an object, go to table1
+  and pick it up first. Do not ask the person to bring objects.
+- Plan the WHOLE task: the last step must finish what the person asked (object delivered, or robot where asked).
 - If the command is unclear or impossible with these skills, return no steps and say why in "reply".
 - Keep plans short. Do not add steps the person did not ask for (for example, do not go home unless asked).
+- Also state the goal: "object" = the object to move (or null), "destination" = "yellow_container" (dropped in it),
+  "table2" (set down on table2), "home", or null. A program checks that your steps reach this goal.
+
+Examples:
+Command: put the coke can in the container. Robot now: at home, holding nothing.
+{{"reply": "Taking the coke can to the container.", "goal": {{"object": "coke_can", "destination": "yellow_container"}},
+ "steps": [{{"skill": "navigate", "args": {{"target": "table1"}}}}, {{"skill": "grasp_scripted", "args": {{"object": "coke_can"}}}},
+           {{"skill": "navigate", "args": {{"target": "table2"}}}}, {{"skill": "drop", "args": {{"container": "yellow_container"}}}}]}}
+Command: set the paper cup down on table 2. Robot now: at table2, holding nothing.
+{{"reply": "Fetching the paper cup from table 1.", "goal": {{"object": "paper_cup", "destination": "table2"}},
+ "steps": [{{"skill": "navigate", "args": {{"target": "table1"}}}}, {{"skill": "grasp_scripted", "args": {{"object": "paper_cup"}}}},
+           {{"skill": "navigate", "args": {{"target": "table2"}}}}, {{"skill": "place_scripted", "args": {{}}}}]}}
+Command: water the plants. Robot now: at home, holding nothing.
+{{"reply": "I can't water plants with my skills.", "goal": null, "steps": []}}
 
 Answer with JSON only, in this form:
-{{"reply": "<one short sentence to the person>", "steps": [{{"skill": "<name>", "args": {{...}}}}]}}"""
+{{"reply": "<one short sentence to the person>", "goal": {{"object": <name or null>, "destination": <name or null>}},
+ "steps": [{{"skill": "<name>", "args": {{...}}}}]}}"""
 
 
 def system_prompt():
@@ -69,7 +87,8 @@ def parse_json(text):
 
 class OpenAILLM:
     """OpenAI's API, or any server that speaks the same API (Ollama, vLLM) when need_key=False."""
-    def __init__(self, model='gpt-4o', url='https://api.openai.com/v1/chat/completions', timeout=60, need_key=True):
+    def __init__(self, model='gpt-4o', url='https://api.openai.com/v1/chat/completions', timeout=60, need_key=True, extra=None):
+        self.extra = extra or {}                     # extra request fields, e.g. {'reasoning_effort': 'none'} for Qwen3 on Ollama
         self.key = os.environ.get('OPENAI_API_KEY')
         if need_key and not self.key:
             raise SystemExit('set OPENAI_API_KEY in the environment first (e.g. export OPENAI_API_KEY=...; never put it in the repo)')
@@ -77,7 +96,7 @@ class OpenAILLM:
 
     def chat(self, messages):
         body = json.dumps({'model': self.model, 'messages': messages, 'temperature': 0,
-                           'response_format': {'type': 'json_object'}}).encode()
+                           'response_format': {'type': 'json_object'}, **self.extra}).encode()
         headers = {'Content-Type': 'application/json'}
         if self.key: headers['Authorization'] = f'Bearer {self.key}'
         req = urllib.request.Request(self.url, data=body, headers=headers)
@@ -127,16 +146,18 @@ class MockLLM:
         steps.append({'skill': 'navigate', 'args': {'target': 'table2'}})
         steps.append({'skill': 'drop', 'args': {'container': 'yellow_container'}} if into_container
                      else {'skill': 'place_scripted', 'args': {}})
-        return json.dumps({'reply': f'Moving the {obj.replace("_", " ")} to table 2.', 'steps': steps})
+        goal = {'object': obj, 'destination': 'yellow_container' if into_container else 'table2'}
+        return json.dumps({'reply': f'Moving the {obj.replace("_", " ")} to table 2.', 'goal': goal, 'steps': steps})
 
 
 DEFAULT_MODEL = {'local': 'qwen3:8b', 'claude': 'claude-sonnet-5-5', 'openai': 'gpt-4o', 'mock': 'mock'}
 LOCAL_URL = 'http://localhost:11434/v1/chat/completions'
 
 
-def make(kind, model=None, url=None):
+def make(kind, model=None, url=None, think=False):
     model = model or DEFAULT_MODEL[kind]
-    if kind == 'local': return OpenAILLM(model, url or LOCAL_URL, timeout=120, need_key=False)
+    if kind == 'local':   # thinking off by default: Qwen3 otherwise "thinks" for ~400 tokens (14 s vs 3.7 s for a short answer, Nov 11)
+        return OpenAILLM(model, url or LOCAL_URL, timeout=180, need_key=False, extra={} if think else {'reasoning_effort': 'none'})
     if kind == 'claude': return ClaudeLLM(model)
     if kind == 'openai': return OpenAILLM(model)
     return MockLLM()
@@ -151,7 +172,7 @@ def plan(llm, command, world, history=None, max_fixes=1):
         raw = llm.chat(messages)
         try:
             p = parse_json(raw)
-            errors = skills.check_plan(p['steps'], world)
+            errors = skills.check_plan(p['steps'], world) or skills.check_goal(p.get('goal'), p['steps'], world)
         except (ValueError, json.JSONDecodeError) as e:
             p, errors = {'reply': '', 'steps': []}, [f'the answer was not valid JSON: {e}']
         if not errors:
