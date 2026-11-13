@@ -12,6 +12,11 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 
 GOALS = {'t1': (-1.146, 0.345, math.radians(-4.2)),
          't2': (-0.660, 1.682, math.radians(-178.9))}
+# t1l: Table 1 parking for the LEARNED pick. Taught on the robot (Nov 12): the robot was placed by hand where the learned
+# pick starts in its demos (can ~25 cm ahead and ~45 cm out from the retracted gripper) and get_pose.py read this pose.
+# The scripted t1 (above) is unchanged. Shifting t1 back along the table (0.30 / 0.45 / 0.60 m) was not enough: the pick
+# still closed its gripper at step 1 from there.
+GOALS['t1l'] = (-1.651, 0.402, math.radians(-4.2))   # taught x was -1.601; moved 5 cm back along the table (Nov 12: with the taught x the robot landed ~8 cm ahead of the taped spot, with 8 cm back it landed 5 cm behind it; Nav2 lands within about +-5 cm). Heading parallel to the table like t1 (taught +0.8 deg was ~5 deg off)
 MAX_TURN = math.radians(25)   # bigger sideways fixes are left for the arm
 
 def wrap(a): return math.atan2(math.sin(a), math.cos(a))
@@ -48,7 +53,7 @@ class Fix(Node):
 
 def main():
     key = sys.argv[1] if len(sys.argv) > 1 else ''
-    if key not in GOALS: print('usage: python3 ~/auto_fix.py t1|t2'); return
+    if key not in GOALS: print('usage: python3 ~/auto_fix.py t1|t1l|t2'); return
     gx, gy, gyaw = GOALS[key]
     rclpy.init(); n = Fix()
     print('refreshing AMCL (4x)...')

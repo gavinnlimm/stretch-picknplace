@@ -244,7 +244,7 @@ class Executor(WithScripted):
         run, ran = self.fake_runner()
         rec = quiet(planner.execute, 'put the soup can in the yellow container', llm.MockLLM(), dict(HOME), {}, go=True, runner=run, ask=lambda q: 'y')
         self.assertEqual(rec['result'], 'success'); self.assertEqual(len(ran), 6)   # nav, reset+pick, nav, reset+drop
-        self.assertIn('t1.sh', ran[0]); self.assertIn('--module pick', ran[2]); self.assertIn('t2.sh', ran[3]); self.assertIn('--module drop', ran[5])
+        self.assertIn('t1l.sh', ran[0]); self.assertIn('--module pick', ran[2]); self.assertIn('t2.sh', ran[3]); self.assertIn('--module drop', ran[5])
         self.assertEqual(rec['end'], {'at': 'table2', 'holding': None})
 
     def test_failure_stops_and_replans_with_history(self):

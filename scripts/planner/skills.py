@@ -236,7 +236,9 @@ def commands(step, cfg=None):
     c = {**DEFAULTS, **(cfg or {})}
     name, a = step['skill'], step.get('args') or {}
     if name == 'navigate':
-        script = {'table1': '~/t1.sh', 'table2': '~/t2.sh', 'home': '~/go_home.sh'}[a['target']]
+        # table1 = t1l, the parking spot taught for the LEARNED pick (hand-placed where the pick demos start). The learned pick works
+        # from the exact spot but is not yet reliable from Nav2's landing (it lands within ~5 cm and the policy is sensitive to that)
+        script = {'table1': '~/t1l.sh', 'table2': '~/t2.sh', 'home': '~/go_home.sh'}[a['target']]
         return [(f'Nav2 to {a["target"]}', ROS + NAV_MODE + f'timeout {NAV_TIMEOUT} bash {script}', None, ok_nav)]
     if name == 'pick':
         return [('pick reset (arm in, gripper open, head to the pick pose)', ROS + f'{PY} ~/pick_reset.py --grip 0.13', '\n\n\n', ok_rc),
